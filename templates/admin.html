@@ -220,7 +220,7 @@
                     <div class="form-group">
                         <label for="player-avatar">URL изображения персонажа:</label>
                         <div style="display: flex; gap: 10px; align-items: flex-end;">
-                            <input type="url" id="player-avatar" class="form-input" placeholder="https://i.ibb.co/xxxxx/image.png или /static/images/characters/Имя.png" style="flex: 1;" required>
+                            <input type="text" id="player-avatar" class="form-input" placeholder="/static/images/characters/Имя.png или полный URL" style="flex: 1;" required>
                             <input type="file" id="player-avatar-file" accept="image/*" style="display: none;">
                             <button type="button" class="btn btn-secondary" onclick="document.getElementById('player-avatar-file').click()" style="white-space: nowrap;">
                                 📤 Загрузить
@@ -261,7 +261,7 @@
                     <div class="form-group">
                         <label for="edit-player-avatar">URL изображения персонажа:</label>
                         <div style="display: flex; gap: 10px; align-items: flex-end;">
-                            <input type="url" id="edit-player-avatar" class="form-input" placeholder="https://i.ibb.co/xxxxx/image.png или /static/images/characters/Имя.png" style="flex: 1;" required>
+                            <input type="text" id="edit-player-avatar" class="form-input" placeholder="/static/images/characters/Имя.png или полный URL" style="flex: 1;" required>
                             <input type="file" id="edit-player-avatar-file" accept="image/*" style="display: none;">
                             <button type="button" class="btn btn-secondary" onclick="document.getElementById('edit-player-avatar-file').click()" style="white-space: nowrap;">
                                 📤 Загрузить
@@ -281,10 +281,5 @@
     </div>
 
     <script src="/static/admin.js"></script>
-    <script>
-        // Получаем API ключ ImgBB с сервера после авторизации
-        // Это будет вызвано из admin.js после успешного логина
-        // Не загружаем здесь, чтобы избежать ошибок 401
-    </script>
 </body>
 </html>

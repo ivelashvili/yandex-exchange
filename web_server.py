@@ -3383,6 +3383,8 @@ async def prometheus_metrics():
 # Создаем директорию для видео, если её нет (видео загружаются отдельно)
 import os
 os.makedirs("static/videos", exist_ok=True)
+# Папка для изображений, загруженных через админку (на Railway монтируется как Volume)
+os.makedirs("static/images/uploads", exist_ok=True)
 app.mount("/static/videos", StaticFiles(directory="static/videos"), name="videos")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 # Папка design (макеты, иконки для миниаппа)
@@ -3462,6 +3464,54 @@ async def get_imgbb_api_key(request: Request):
         return JSONResponse(status_code=500, content={"error": "API ключ ImgBB не настроен на сервере"})
     
     return {"api_key": imgbb_api_key}
+
+UPLOAD_IMAGE_DIR = os.path.join("static", "images", "uploads")
+UPLOAD_ALLOWED_EXTENSIONS = {"png": "png", "jpg": "jpg", "jpeg": "jpg", "webp": "webp", "gif": "gif"}
+UPLOAD_MAX_BYTES = 5 * 1024 * 1024
+
+@app.post("/api/admin/upload-image")
+async def upload_admin_image(request: Request):
+    """Сохранить изображение (персонаж, событие раунда) на сервере и вернуть путь к нему"""
+    token = get_admin_token(request)
+    if not verify_admin_token(token):
+        return JSONResponse(status_code=401, content={"error": "Не авторизован"})
+
+    try:
+        data = await request.json()
+        original_name = (data.get("filename") or "").strip()
+        content = data.get("content") or ""
+
+        extension = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
+        if extension not in UPLOAD_ALLOWED_EXTENSIONS:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Поддерживаются только PNG, JPG, WEBP и GIF"}
+            )
+
+        if "," in content:
+            content = content.split(",", 1)[1]
+
+        try:
+            blob = base64.b64decode(content, validate=True)
+        except Exception:
+            return JSONResponse(status_code=400, content={"error": "Некорректные данные файла"})
+
+        if not blob:
+            return JSONResponse(status_code=400, content={"error": "Файл пустой"})
+        if len(blob) > UPLOAD_MAX_BYTES:
+            return JSONResponse(status_code=400, content={"error": "Размер файла не должен превышать 5 МБ"})
+
+        os.makedirs(UPLOAD_IMAGE_DIR, exist_ok=True)
+        # Имя генерируем сами: исходное может содержать кириллицу или путь
+        safe_name = f"{secrets.token_urlsafe(12)}.{UPLOAD_ALLOWED_EXTENSIONS[extension]}"
+        with open(os.path.join(UPLOAD_IMAGE_DIR, safe_name), "wb") as f:
+            f.write(blob)
+
+        api_logger.info(f"Загружено изображение: {safe_name} ({len(blob)} байт)")
+        return {"success": True, "url": f"/static/images/uploads/{safe_name}"}
+    except Exception as e:
+        api_logger.error(f"Ошибка загрузки изображения: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.get("/api/admin/check")
 async def admin_check(request: Request):

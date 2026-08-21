@@ -43,11 +43,6 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
             adminToken = data.token;
             localStorage.setItem('admin_token', adminToken);
             
-            // Загружаем API ключ ImgBB после успешной авторизации
-            getImgbbApiKey().catch(err => {
-                console.warn('API ключ ImgBB не настроен. Загрузка изображений будет недоступна.');
-            });
-            
             showAdminPanel();
         } else {
             errorDiv.textContent = data.error || 'Неверный пароль';
@@ -632,7 +627,7 @@ async function onRoundEventImageChosen(roundNum, fileInput) {
     const status = document.getElementById(`event-r-${roundNum}-upload-status`);
     if (status) status.textContent = 'Загрузка...';
     try {
-        const url = await uploadImageToImgBB(file);
+        const url = await uploadImageToServer(file);
         const imgField = document.getElementById(`event-r-${roundNum}-image`);
         if (imgField) imgField.value = url;
         if (status) status.textContent = 'Готово';
@@ -1023,7 +1018,7 @@ async function onWebEventImageChosen(roundNum, fileInput) {
     const status = document.getElementById(`web-r-${roundNum}-upload-status`);
     if (status) status.textContent = 'Загрузка...';
     try {
-        const url = await uploadImageToImgBB(file);
+        const url = await uploadImageToServer(file);
         const imgField = document.getElementById(`web-r-${roundNum}-image`);
         if (imgField) imgField.value = url;
         if (status) status.textContent = 'Готово';
@@ -1042,7 +1037,7 @@ async function onWebEventBgImageChosen(roundNum, fileInput) {
     const status = document.getElementById(`web-r-${roundNum}-bg-upload-status`);
     if (status) status.textContent = 'Загрузка...';
     try {
-        const url = await uploadImageToImgBB(file);
+        const url = await uploadImageToServer(file);
         const imgField = document.getElementById(`web-r-${roundNum}-bg`);
         if (imgField) imgField.value = url;
         if (status) status.textContent = 'Готово';
@@ -1557,7 +1552,7 @@ document.getElementById('edit-player-avatar-file')?.addEventListener('change', a
     statusDiv.style.color = '#666';
     
     try {
-        const imageUrl = await uploadImageToImgBB(file);
+        const imageUrl = await uploadImageToServer(file);
         urlInput.value = imageUrl;
         
         // Показываем успех
@@ -1574,6 +1569,7 @@ document.getElementById('edit-player-avatar-file')?.addEventListener('change', a
         console.error('Ошибка загрузки:', error);
         statusDiv.textContent = `❌ Ошибка: ${error.message}`;
         statusDiv.style.color = '#d32f2f';
+    } finally {
         urlInput.disabled = false;
     }
 });
@@ -1733,7 +1729,7 @@ document.getElementById('player-avatar-file')?.addEventListener('change', async 
     statusDiv.style.color = '#666';
     
     try {
-        const imageUrl = await uploadImageToImgBB(file);
+        const imageUrl = await uploadImageToServer(file);
         urlInput.value = imageUrl;
         
         // Показываем успех
@@ -1750,6 +1746,7 @@ document.getElementById('player-avatar-file')?.addEventListener('change', async 
         console.error('Ошибка загрузки:', error);
         statusDiv.textContent = `❌ Ошибка: ${error.message}`;
         statusDiv.style.color = '#d32f2f';
+    } finally {
         urlInput.disabled = false;
     }
 });
@@ -1854,71 +1851,36 @@ async function deletePlayer(playerId) {
     }
 }
 
-// ========== ЗАГРУЗКА ИЗОБРАЖЕНИЙ ЧЕРЕЗ IMGBB ==========
-
-let imgbbApiKey = null; // Для хранения API ключа ImgBB
+// ========== ЗАГРУЗКА ИЗОБРАЖЕНИЙ ==========
 
 /**
- * Получить API ключ ImgBB с сервера
+ * Загрузить изображение на сервер игры.
+ * Файл передаём base64 в JSON, чтобы не тянуть python-multipart на бэкенде.
  */
-async function getImgbbApiKey() {
-    if (imgbbApiKey) return imgbbApiKey; // Используем кэшированный ключ
+async function uploadImageToServer(file) {
+    const content = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
+        reader.readAsDataURL(file);
+    });
     
-    try {
-        const response = await fetch('/api/admin/imgbb-api-key', {
-            headers: { 'Authorization': `Bearer ${adminToken}` }
-        });
-        
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.error || `Ошибка получения API ключа ImgBB (${response.status})`);
-        }
-        
-        const data = await response.json();
-        imgbbApiKey = data.api_key;
-        return imgbbApiKey;
-    } catch (error) {
-        console.error('Ошибка получения API ключа ImgBB:', error);
-        throw new Error(`Не удалось получить API ключ ImgBB: ${error.message}`);
-    }
-}
-
-/**
- * Загрузить изображение на ImgBB
- */
-async function uploadImageToImgBB(file) {
-    const apiKey = await getImgbbApiKey();
+    const response = await fetch('/api/admin/upload-image', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${adminToken}`
+        },
+        body: JSON.stringify({ filename: file.name, content })
+    });
     
-    if (!apiKey) {
-        throw new Error('API ключ ImgBB не настроен. Обратитесь к администратору.');
+    const data = await response.json().catch(() => ({}));
+    
+    if (!response.ok || !data.url) {
+        throw new Error(data.error || `Ошибка загрузки (${response.status})`);
     }
     
-    const formData = new FormData();
-    formData.append('image', file);
-    formData.append('key', apiKey);
-    
-    try {
-        const response = await fetch('https://api.imgbb.com/1/upload', {
-            method: 'POST',
-            body: formData
-        });
-        
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.error?.message || `Ошибка загрузки (${response.status})`);
-        }
-        
-        const data = await response.json();
-        
-        if (data.success) {
-            return data.data.url; // Прямой URL изображения
-        } else {
-            throw new Error(data.error?.message || 'Ошибка загрузки изображения');
-        }
-    } catch (error) {
-        console.error('Ошибка загрузки изображения на ImgBB:', error);
-        throw error;
-    }
+    return data.url;
 }
 
 // Функции handleImageFileSelect и showImagePreview удалены - больше не используются
