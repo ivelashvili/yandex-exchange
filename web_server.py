@@ -23,8 +23,7 @@ from game_engine import (
     PROJECTOR_PCT_BASELINES_CONFIG_KEY,
 )
 from game_config import RESOURCE_PRICES, BUILDING_COSTS, BUILDING_INCOME, STARTING_MONEY
-from game_events import POSITIVE_EVENTS, NEGATIVE_EVENTS, EventSystem
-from fixed_scenario_analysis import FIXED_EVENT_SEQUENCE, combine_two_positive_events
+from game_events import EventSystem
 import database
 from fastapi.responses import JSONResponse
 from security.validators import (
@@ -39,6 +38,7 @@ from logging_config import api_logger, security_logger
 import time
 import traceback
 import os
+import re
 from monitoring import (
     record_request, record_error, get_metrics, get_health_status,
     update_websocket_connections
@@ -182,6 +182,7 @@ async def get_game_by_code(game_code: str, allow_archived: bool = False) -> Game
     game.current_round_players_sold = {}
     game.round_history = []
     game.player_capitalization_by_round_entry = {}
+    game.round_trading_locked = bool(game_data.get("round_trading_locked", False))
     game._initialized = True  # Помечаем как инициализированную, т.к. загружаем напрямую
     game._load_from_db = False
     
@@ -222,6 +223,7 @@ async def get_game_by_code(game_code: str, allow_archived: bool = False) -> Game
                 row = await conn.fetchrow("SELECT * FROM games WHERE id = $1", game_data['id'])
                 if row:
                     game.current_round = row.get('current_round', 1)
+                    game.round_trading_locked = bool(row.get('round_trading_locked', False))
                 
                 # Загружаем текущие цены
                 price_rows = await conn.fetch("SELECT resource_name, price FROM current_prices WHERE game_id = $1", game_data['id'])
@@ -246,6 +248,8 @@ async def get_game_by_code(game_code: str, allow_archived: bool = False) -> Game
                         player.nickname = p_row['nickname']
                     if p_row.get('photo_url'):
                         player.photo_url = p_row['photo_url']
+                    player.ready_next_round = bool(p_row.get('ready_next_round', False))
+                    player.ready_next_round_for = p_row.get('ready_next_round_for')
                     
                     # Загружаем ресурсы
                     resource_rows = await conn.fetch(
@@ -327,6 +331,8 @@ async def get_game_by_code(game_code: str, allow_archived: bool = False) -> Game
                 row = await cursor.fetchone()
                 if row:
                     game.current_round = row['current_round'] if row['current_round'] else 1
+                    if 'round_trading_locked' in row.keys():
+                        game.round_trading_locked = bool(row['round_trading_locked'])
                 
                 # Загружаем текущие цены
                 cursor = await conn.execute("SELECT resource_name, price FROM current_prices WHERE game_id = ?", (game_data['id'],))
@@ -351,6 +357,10 @@ async def get_game_by_code(game_code: str, allow_archived: bool = False) -> Game
                         player.character_name = p_row['character_name']
                     if p_row.get('character_image'):
                         player.character_image = p_row['character_image']
+                    if 'ready_next_round' in p_row.keys():
+                        player.ready_next_round = bool(p_row['ready_next_round'])
+                    if 'ready_next_round_for' in p_row.keys():
+                        player.ready_next_round_for = p_row['ready_next_round_for']
                     
                     # Загружаем ресурсы
                     player_id_for_resources = p_row['id'] if 'id' in p_row.keys() else p_row['player_id']
@@ -752,200 +762,102 @@ async def get_intro_content(game_code: str = Query(..., description="Код иг
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+def _coef_change_percent(coef: float) -> tuple:
+    """Процент изменения и направление из коэффициента раунда (1.0 = без изменений)."""
+    try:
+        c = float(coef)
+    except (TypeError, ValueError):
+        c = 1.0
+    if c < 1.0:
+        return round((1.0 - c) * 100, 0), "down"
+    if c > 1.0:
+        return round((c - 1.0) * 100, 0), "up"
+    return 0, "neutral"
+
+
+async def build_round_summary_payload(game_id: int, round_number: int) -> dict:
+    """
+    Сводка для проектора: текст/картинки из «События ВЕБ», изменения — из настроек раунда в админке.
+    """
+    web_event = await database.get_round_web_event(game_id, round_number) or {}
+    event_text = (web_event.get("event_text") or "").strip()
+    image_url = (web_event.get("image_url") or "").strip()
+    bg_image_url = (web_event.get("bg_image_url") or "").strip()
+    highlight_resources = web_event.get("highlight_resources") or []
+    highlight_buildings = web_event.get("highlight_buildings") or []
+
+    resource_modifiers = {}
+    building_modifiers = {}
+    settings_rows = await database.get_round_settings(game_id, round_number)
+    if settings_rows:
+        resource_modifiers = settings_rows[0].get("resource_modifiers") or {}
+        building_modifiers = settings_rows[0].get("building_modifiers") or {}
+
+    key_resources = []
+    for resource in highlight_resources:
+        coef = resource_modifiers.get(resource, 1.0)
+        change_percent, direction = _coef_change_percent(coef)
+        if direction == "neutral":
+            continue
+        key_resources.append({
+            "name": resource,
+            "change_percent": change_percent,
+            "direction": direction,
+            "reason": "Коэффициент раунда (настройки админки)",
+        })
+    key_resources.sort(key=lambda x: abs(x["change_percent"]), reverse=True)
+
+    key_buildings = []
+    for building_name in highlight_buildings:
+        coef = building_modifiers.get(building_name, 1.0)
+        change_percent, direction = _coef_change_percent(coef)
+        if direction == "neutral":
+            continue
+        key_buildings.append({
+            "name": building_name,
+            "income_change_percent": change_percent,
+            "direction": direction,
+            "reason": "Коэффициент раунда (настройки админки)",
+        })
+    key_buildings.sort(key=lambda x: abs(x["income_change_percent"]), reverse=True)
+
+    title = f"Раунд {round_number}"
+    if round_number == 1 and not event_text:
+        title = "Раунд 1: Начало игры"
+
+    return {
+        "title": title,
+        "events": {
+            "event_text": event_text or None,
+            "image_url": image_url or None,
+            "bg_image_url": bg_image_url or None,
+        },
+        "key_resources": key_resources,
+        "key_buildings": key_buildings,
+    }
+
+
 @app.get("/api/round/{round_number}/summary")
 async def get_round_summary(
     request: Request,
     round_number: int,
     game_code: str = Query(..., description="Код игры (6 цифр)")
 ):
-    """Получить сводку по раунду (события, изменения цен и доходов)"""
-    # Логируем вызов функции (удален DEBUG print)
+    """Сводка раунда для проектора: «События ВЕБ» + коэффициенты из настроек раунда."""
+    from fastapi.responses import JSONResponse
+
     try:
         game = await get_game_by_code(game_code)
-        
+
         if round_number < 1 or round_number > 10:
             raise HTTPException(status_code=400, detail="Некорректный номер раунда (1-10)")
-        
-        # Создаем словари для быстрого поиска событий
-        positive_events_dict = {e["name"]: e for e in POSITIVE_EVENTS}
-        negative_events_dict = {e["name"]: e for e in NEGATIVE_EVENTS}
-        
-        # Ключевые ресурсы
-        KEY_RESOURCES = ["золото", "железо", "дерево", "зерно", "скот", "рабы", "рыба", "овощи"]
-        
-        def calculate_price_change_percent(modifier: float) -> float:
-            """Рассчитывает процент изменения цены от модификатора"""
-            if modifier < 1.0:
-                return (1.0 - modifier) * 100
-            else:
-                return (modifier - 1.0) * 100
-        
-        def calculate_income_change_percent(modifier: float) -> float:
-            """Рассчитывает процент изменения дохода от модификатора"""
-            if modifier < 1.0:
-                return (1.0 - modifier) * 100
-            else:
-                return (modifier - 1.0) * 100
-        
-        def get_resource_change_reason(resource: str, modifier: float) -> str:
-            """Получить причину изменения цены ресурса"""
-            if modifier < 1.0:
-                reasons = {
-                    "зерно": "Избыток урожая",
-                    "овощи": "Избыток урожая",
-                    "скот": "Хорошо откормлен",
-                    "рыба": "Огромное предложение",
-                    "золото": "Больше предложения",
-                    "железо": "Новые инструменты",
-                    "дерево": "Меньше строительства",
-                    "камень": "Меньше строительства",
-                    "рабы": "Привезли рабов"
-                }
-            else:
-                reasons = {
-                    "зерно": "Урожай погиб",
-                    "овощи": "Овощи засохли/разграблены",
-                    "скот": "Скот угнан/погиб",
-                    "рыба": "Реки обмелели",
-                    "золото": "Инфляция",
-                    "железо": "Нужно для оружия",
-                    "дерево": "Леса сожжены/нужно для укреплений",
-                    "камень": "Нужно для строительства",
-                    "рабы": "Рабов нет/болеют"
-                }
-            return reasons.get(resource, "Изменение спроса/предложения")
-        
-        def get_building_change_reason(building_name: str, modifier: float) -> str:
-            """Получить причину изменения дохода объекта"""
-            if modifier < 1.0:
-                reasons = {
-                    "Посевные поля": "Поля сожжены/высохли",
-                    "Теплицы": "Частично разрушены",
-                    "Ферма": "Фермы разграблены/скот погиб",
-                    "Лесоповал": "Леса сожжены",
-                    "Трактир": "Меньше посетителей",
-                    "Постоялый двор": "Меньше путешественников",
-                    "Куртизанские палатки": "Закрыты рейдом/церковью",
-                    "Рыболовня": "Рыбы мало",
-                    "Каменоломня": "Нет рабов",
-                    "Золотой рудник": "Нет рабов",
-                    "Кузнечная": "Меньше заказов"
-                }
-            else:
-                reasons = {
-                    "Посевные поля": "Рекордный урожай",
-                    "Теплицы": "Овощей много",
-                    "Ферма": "Скот здоров",
-                    "Лесоповал": "Лучшие инструменты",
-                    "Трактир": "Народ гуляет",
-                    "Постоялый двор": "Много постояльцев",
-                    "Куртизанские палатки": "Праздничное веселье",
-                    "Рыболовня": "Рекордный улов",
-                    "Каменоломня": "Больше работы",
-                    "Золотой рудник": "Добыча выросла",
-                    "Кузнечная": "Новые технологии/военные заказы"
-                }
-            return reasons.get(building_name, "Изменение условий")
-        
-        def get_key_resources(resource_modifiers: dict) -> list:
-            """Получить список ключевых ресурсов с изменениями"""
-            key_resources = []
-            for resource in KEY_RESOURCES:
-                if resource in resource_modifiers:
-                    modifier = resource_modifiers[resource]
-                    change_percent = calculate_price_change_percent(modifier)
-                    if abs(change_percent) >= 5:
-                        direction = "down" if modifier < 1.0 else "up"
-                        reason = get_resource_change_reason(resource, modifier)
-                        key_resources.append({
-                            "name": resource,
-                            "change_percent": round(change_percent, 0),
-                            "direction": direction,
-                            "reason": reason
-                        })
-            key_resources.sort(key=lambda x: abs(x["change_percent"]), reverse=True)
-            return key_resources[:5]
-        
-        def get_key_buildings(building_modifiers: dict) -> list:
-            """Получить список ключевых объектов с изменениями"""
-            key_buildings = []
-            for building_name, modifier in building_modifiers.items():
-                change_percent = calculate_income_change_percent(modifier)
-                if abs(change_percent) >= 10:
-                    direction = "down" if modifier < 1.0 else "up"
-                    reason = get_building_change_reason(building_name, modifier)
-                    key_buildings.append({
-                        "name": building_name,
-                        "income_change_percent": round(change_percent, 0),
-                        "direction": direction,
-                        "reason": reason
-                    })
-            key_buildings.sort(key=lambda x: abs(x["income_change_percent"]), reverse=True)
-            return key_buildings[:5]
-        
-        from fastapi.responses import JSONResponse
-        # Получаем сводку для раунда
-        if round_number == 1:
-            return JSONResponse(content={
-                "title": "Раунд 1: Начало игры",
-                "events": {
-                    "positive": None,
-                    "negative": None,
-                    "positive_description": None,
-                    "negative_description": None
-                },
-                "key_resources": [],
-                "key_buildings": []
-            })
-        
-        # Получаем события для раунда
-        event_pair = FIXED_EVENT_SEQUENCE[round_number - 1]
-        pos_name, second_name = event_pair
-        
-        positive_event = positive_events_dict.get(pos_name)
-        
-        # Специальная обработка для раунда 3 (два позитивных события)
-        if round_number == 3:
-            second_positive_event = positive_events_dict.get(second_name)
-            resource_mods, building_mods = combine_two_positive_events(
-                positive_event, second_positive_event
-            )
-            
-            return JSONResponse(content={
-                "title": f"Раунд {round_number}: Двойной праздник",
-                "events": {
-                    "positive": pos_name,
-                    "positive2": second_name,
-                    "negative": None,
-                    "positive_description": positive_event["description"],
-                    "positive2_description": second_positive_event["description"]
-                },
-                "key_resources": get_key_resources(resource_mods),
-                "key_buildings": get_key_buildings(building_mods)
-            })
-        else:
-            # Обычная пара: позитивное + негативное
-            negative_event = negative_events_dict.get(second_name)
-            event_system = EventSystem()
-            resource_mods, building_mods = event_system.combine_event_modifiers(
-                positive_event, negative_event
-            )
-            
-            return JSONResponse(content={
-                "title": f"Раунд {round_number}",
-                "events": {
-                    "positive": pos_name,
-                    "negative": second_name,
-                    "positive_description": positive_event["description"],
-                    "negative_description": negative_event["description"]
-                },
-                "key_resources": get_key_resources(resource_mods),
-                "key_buildings": get_key_buildings(building_mods)
-            })
+
+        payload = await build_round_summary_payload(game.game_id, round_number)
+        return JSONResponse(content=payload)
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Ошибка в get_round_summary для раунда {round_number}: {e}")
-        import traceback
-        traceback.print_exc()
+        api_logger.error(f"Ошибка get_round_summary раунд {round_number}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ошибка получения сводки: {str(e)}")
 
 def _player_buildings_portfolio(player_obj) -> List[Dict]:
@@ -1355,6 +1267,16 @@ async def get_resource_details(
     else:
         supply_level = "базовое"
     
+    resource_text = ""
+    try:
+        current_round = int(getattr(game, "current_round", 1) or 1)
+        settings_rows = await database.get_round_settings(game.game_id, current_round)
+        if settings_rows:
+            texts = settings_rows[0].get("resource_texts") or {}
+            resource_text = (texts.get(resource_name) or "").strip()
+    except Exception:
+        resource_text = ""
+
     from fastapi.responses import JSONResponse
     return JSONResponse(content={
         "name": resource_name,
@@ -1363,8 +1285,55 @@ async def get_resource_details(
         "change_from_start_percent": round(change_from_start, 2),
         "demand_level": demand_level,
         "supply_level": supply_level,
-        "price_history": price_history
+        "price_history": price_history,
+        "resource_text": resource_text,
     })
+
+def _active_building_counts(game: Game) -> Dict[str, int]:
+    """Количество активных объектов по типам (для расчёта дохода раунда)."""
+    enabled = getattr(game, "enabled_buildings", None) or list(BUILDING_INCOME.keys())
+    counts: Dict[str, int] = {}
+    for player in getattr(game, "players", []) or []:
+        for building in getattr(player, "buildings", []) or []:
+            try:
+                if (
+                    building.status == BuildingStatus.ACTIVE
+                    and building.name in enabled
+                ):
+                    counts[building.name] = counts.get(building.name, 0) + 1
+            except Exception:
+                continue
+    return counts
+
+
+def _serialize_income_dict(income: Optional[Dict]) -> Dict:
+    """Нормализует доход объекта для JSON (целые монеты, округлённые ресурсы)."""
+    if not income:
+        return {"монеты": 0, "ресурсы": {}}
+    resources = {}
+    for res, amt in (income.get("ресурсы") or {}).items():
+        try:
+            resources[res] = int(round(float(amt)))
+        except (TypeError, ValueError):
+            resources[res] = 0
+    try:
+        coins = int(round(float(income.get("монеты") or 0)))
+    except (TypeError, ValueError):
+        coins = 0
+    return {"монеты": coins, "ресурсы": resources}
+
+
+def _format_income_label(income: Dict) -> str:
+    """Человекочитаемая строка дохода для проектора."""
+    parts = []
+    coins = income.get("монеты") or 0
+    if coins:
+        parts.append(f"{coins} монет")
+    for res, amt in (income.get("ресурсы") or {}).items():
+        if amt:
+            parts.append(f"{res}: {amt}")
+    return ", ".join(parts) if parts else "0"
+
 
 @app.get("/api/building/{building_name}")
 async def get_building_details(
@@ -1374,7 +1343,8 @@ async def get_building_details(
 ):
     """Получить детальную информацию об объекте, включая список владельцев"""
     game = await get_game_by_code(game_code)
-    
+    building_name = unquote(building_name)
+
     # Подсчитываем общее количество объектов
     total_count = 0
     owners = {}  # {player_id: {name: str, count: int}}
@@ -1417,13 +1387,57 @@ async def get_building_details(
     
     # Сортируем владельцев по количеству объектов (от большего к меньшему)
     owners_list = sorted(owners.values(), key=lambda x: x["count"], reverse=True)
-    
+
+    building_text = ""
+    building_modifiers: Dict[str, float] = {}
+    try:
+        current_round = int(getattr(game, "current_round", 1) or 1)
+        settings_rows = await database.get_round_settings(game.game_id, current_round)
+        if settings_rows:
+            texts = settings_rows[0].get("building_texts") or {}
+            building_text = (texts.get(building_name) or "").strip()
+            building_modifiers = settings_rows[0].get("building_modifiers") or {}
+    except Exception:
+        building_text = ""
+
+    game_building_costs = getattr(game, "game_building_costs", None) or BUILDING_COSTS
+    costs = dict(game_building_costs.get(building_name) or BUILDING_COSTS.get(building_name, {}))
+
+    game_building_income = getattr(game, "game_building_income", None) or BUILDING_INCOME
+    base_income = _serialize_income_dict(
+        game_building_income.get(building_name, BUILDING_INCOME.get(building_name, {}))
+    )
+
+    current_round_income = {"монеты": 0, "ресурсы": {}}
+    try:
+        market = getattr(game, "market", None)
+        if market is not None:
+            counts = _active_building_counts(game)
+            prices = getattr(game, "current_prices", {}) or RESOURCE_PRICES.copy()
+            incomes = market.calculate_building_incomes(
+                counts, prices, building_modifiers
+            )
+            current_round_income = _serialize_income_dict(
+                incomes.get(building_name, {})
+            )
+    except Exception as e:
+        api_logger.warning(
+            f"Не удалось рассчитать доход объекта {building_name} за раунд: {e}"
+        )
+
     from fastapi.responses import JSONResponse
     return JSONResponse(content={
         "name": building_name,
         "count": total_count,
         "players_percentage": players_percentage,
-        "owners": owners_list
+        "owners": owners_list,
+        "building_text": building_text,
+        "costs": costs,
+        "base_income": base_income,
+        "current_round_income": current_round_income,
+        "current_round_income_label": _format_income_label(current_round_income),
+        "base_income_label": _format_income_label(base_income),
+        "current_round": int(getattr(game, "current_round", 1) or 1),
     })
 
 async def _get_game_state_internal(game: Game, game_code: str):
@@ -1543,9 +1557,13 @@ async def _get_game_state_internal(game: Game, game_code: str):
             api_logger.warning(f"Ошибка получения объектов в get_game_state: {e}")
             buildings_data = []
         
+        ready_count, ready_total = game.count_ready_next_round()
         state = {
             "current_round": getattr(game, 'current_round', 1),
             "num_players": len(getattr(game, 'players', [])),
+            "ready_next_round_count": ready_count,
+            "ready_next_round_total": ready_total,
+            "round_trading_locked": bool(getattr(game, 'round_trading_locked', False)),
             "leaderboard": leaderboard_data,
             "prices": prices_data,
             "buildings": buildings_data
@@ -1616,6 +1634,23 @@ async def set_round(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Внутренняя ошибка: {str(e)}")
 
+@app.post("/api/game/finish-round")
+async def finish_round(request: Request, game_code: str = Query(..., description="Код игры (6 цифр)")):
+    """Заблокировать торговлю у всех до следующего раунда (ведущий)."""
+    try:
+        game = await get_game_by_code(game_code)
+        result = await game.finish_round_trading_lock()
+        await game.save_to_database()
+        await broadcast_update(game_code=game_code)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content=result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        api_logger.error(f"finish-round: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка: {type(e).__name__}")
+
+
 @app.post("/api/game/next-round")
 async def next_round(request: Request, game_code: str = Query(..., description="Код игры (6 цифр)")):
     """Перейти к следующему раунду"""
@@ -1625,10 +1660,13 @@ async def next_round(request: Request, game_code: str = Query(..., description="
         await game.save_to_database()
         await broadcast_update(game_code=game_code)
         from fastapi.responses import JSONResponse
+        ready_count, ready_total = game.count_ready_next_round()
         return JSONResponse(content={
             "success": True,
             "current_round": game.current_round,
-            "events": result.get("events")
+            "events": result.get("events"),
+            "ready_next_round_count": ready_count,
+            "ready_next_round_total": ready_total,
         })
     except HTTPException:
         raise
@@ -2151,7 +2189,8 @@ async def get_player_state(
                     "buildings": buildings_with_value,
                     "capitalization": int(round(total_value)),
                     "growth_round_percent": round(growth_round, 2),
-                    "growth_game_percent": round(growth_game, 2)
+                    "growth_game_percent": round(growth_game, 2),
+                    "trading_locked": game.is_trading_locked_for_player(player_id),
                 },
                 headers=_MINIAPP_STATE_NO_CACHE,
             )
@@ -2172,6 +2211,31 @@ async def get_player_state(
             content={"detail": f"Внутренняя ошибка: {str(e)}"},
             headers=_MINIAPP_STATE_NO_CACHE,
         )
+
+@app.post("/api/miniapp/player/ready-next-round")
+async def miniapp_player_ready_next_round(
+    request: Request,
+    game_code: str = Query(..., description="Код игры (6 цифр)"),
+    x_telegram_init_data: Optional[str] = Header(None),
+):
+    """Игрок подтверждает готовность к следующему раунду (блокируется только его торговля)."""
+    try:
+        game = await get_game_by_code(game_code)
+        if not x_telegram_init_data:
+            x_telegram_init_data = "test_init_data"
+        player_id = get_player_id_from_telegram(x_telegram_init_data) or "tg_12345"
+        result = await game.mark_player_ready_next_round(player_id)
+        if not result.get("success"):
+            raise HTTPException(status_code=404, detail=result.get("message", "Игрок не найден"))
+        await broadcast_update(game_code=game_code)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content=result, headers=_MINIAPP_STATE_NO_CACHE)
+    except HTTPException:
+        raise
+    except Exception as e:
+        api_logger.error(f"ready-next-round: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка: {type(e).__name__}")
+
 
 @app.get("/api/miniapp/characters")
 async def get_miniapp_characters(
@@ -2536,7 +2600,10 @@ async def get_available_buildings(
         raise HTTPException(status_code=404, detail="Игрок не найден")
     
     result = []
-    for building_name, costs in BUILDING_COSTS.items():
+    game_building_costs = getattr(game, "game_building_costs", None) or BUILDING_COSTS
+    enabled_buildings = list(getattr(game, "enabled_buildings", None) or list(BUILDING_COSTS.keys()))
+    for building_name in enabled_buildings:
+        costs = game_building_costs.get(building_name) or BUILDING_COSTS.get(building_name, {})
         can_build = player.has_resources(costs)
         cost = game.calculate_building_cost(building_name)
         
@@ -3100,8 +3167,13 @@ async def get_player_building_details(
     # Рассчитываем изменение капитализации
     # Для упрощения: используем базовую стоимость объекта
     from game_config import BUILDING_COSTS, RESOURCE_PRICES
-    building_cost = BUILDING_COSTS.get(building_name, {})
-    base_cost = sum(amount * RESOURCE_PRICES.get(resource, 0) for resource, amount in building_cost.items())
+    game_costs_map = getattr(game, "game_building_costs", None) or {}
+    building_cost = game_costs_map.get(building_name) or BUILDING_COSTS.get(building_name, {})
+    game_resource_prices = getattr(game, "game_resource_prices", None) or RESOURCE_PRICES
+    base_cost = sum(
+        amount * game_resource_prices.get(resource, RESOURCE_PRICES.get(resource, 0))
+        for resource, amount in building_cost.items()
+    )
     base_capitalization = base_cost * count
     
     # Изменение капитализации за раунд и за игру
@@ -3567,7 +3639,8 @@ async def get_game_info_admin(game_code: str, request: Request):
             "game_code": game_code,
             "current_round": game.current_round,
             "num_players": len(game.players),
-            "status": "archived" if hasattr(game, 'status') and game.status == 'archived' else "active"
+            "status": "archived" if hasattr(game, 'status') and game.status == 'archived' else "active",
+            "story_id": await database.get_game_story_id(game.game_id) or "",
         }
     except Exception as e:
         api_logger.error(f"Ошибка получения информации об игре: {e}", exc_info=True)
@@ -3947,6 +4020,61 @@ async def get_round_events_admin(game_code: str, request: Request):
         api_logger.error(f"Ошибка получения событий раундов: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+@app.get("/api/admin/games/{game_code}/web-events")
+async def get_web_events_admin(game_code: str, request: Request):
+    """События ВЕБ для проектора (текст, картинки, подсветка ресурсов/объектов)."""
+    if not verify_admin_token(get_admin_token(request)):
+        return JSONResponse(status_code=401, content={"error": "Неавторизован"})
+    try:
+        game = await get_game_by_code(game_code)
+        events = await database.list_round_web_events_admin(game.game_id)
+        return {"success": True, "events": events}
+    except HTTPException as he:
+        return JSONResponse(status_code=he.status_code, content={"error": he.detail})
+    except Exception as e:
+        api_logger.error(f"Ошибка получения событий ВЕБ: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/admin/games/{game_code}/web-events/{round_number}")
+async def save_web_event_admin(game_code: str, round_number: int, request: Request):
+    """Сохранить событие ВЕБ для раунда (1–10)."""
+    if not verify_admin_token(get_admin_token(request)):
+        return JSONResponse(status_code=401, content={"error": "Неавторизован"})
+    try:
+        game = await get_game_by_code(game_code)
+        if not isinstance(round_number, int) or round_number < 1 or round_number > 10:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Номер раунда должен быть от 1 до 10"},
+            )
+        data = await request.json()
+        event_text = data.get("event_text", "") or ""
+        image_url = data.get("image_url", "") or ""
+        bg_image_url = data.get("bg_image_url", "") or ""
+        highlight_resources = data.get("highlight_resources") or []
+        highlight_buildings = data.get("highlight_buildings") or []
+        if not isinstance(highlight_resources, list):
+            highlight_resources = []
+        if not isinstance(highlight_buildings, list):
+            highlight_buildings = []
+        await database.save_round_web_event(
+            game.game_id,
+            round_number,
+            str(event_text),
+            str(image_url),
+            str(bg_image_url),
+            [str(x) for x in highlight_resources],
+            [str(x) for x in highlight_buildings],
+        )
+        return {"success": True, "message": "Событие ВЕБ сохранено"}
+    except HTTPException as he:
+        return JSONResponse(status_code=he.status_code, content={"error": he.detail})
+    except Exception as e:
+        api_logger.error(f"Ошибка сохранения события ВЕБ: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 @app.post("/api/admin/games/{game_code}/round-events/{round_number}")
 async def save_round_event_admin(game_code: str, round_number: int, request: Request):
     """Сохранить текст/изображение события для раунда (1–10). Оба пустые — очищают только поля админки."""
@@ -4012,12 +4140,72 @@ async def save_round_settings_admin(game_code: str, round_number: int, request: 
         data = await request.json()
         resource_modifiers = data.get("resource_modifiers", {})
         building_modifiers = data.get("building_modifiers", {})
+        resource_texts = data.get("resource_texts", {})
+        building_texts = data.get("building_texts", {})
         
-        await database.save_round_settings(game.game_id, round_number, resource_modifiers, building_modifiers)
+        await database.save_round_settings(
+            game.game_id, round_number,
+            resource_modifiers, building_modifiers,
+            resource_texts=resource_texts,
+            building_texts=building_texts,
+        )
         return {"success": True, "message": "Настройки сохранены"}
     except Exception as e:
         api_logger.error(f"Ошибка сохранения настроек: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+def _load_admin_story_json(story_id: str) -> Dict:
+    """Загрузить JSON сюжета из static/stories (только story-N)."""
+    story_id = (story_id or "").strip()
+    if not re.fullmatch(r"story-\d+", story_id):
+        raise ValueError("Некорректный идентификатор сюжета")
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    story_path = os.path.join(base_dir, "static", "stories", f"{story_id}.json")
+    if not os.path.isfile(story_path):
+        raise FileNotFoundError(f"Сюжет «{story_id}» не найден")
+    with open(story_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@app.post("/api/admin/games/{game_code}/apply-story")
+async def apply_story_admin(game_code: str, request: Request):
+    """Применить сюжет ко всей игре: раунды, события, события ВЕБ + сохранить story_id."""
+    if not verify_admin_token(get_admin_token(request)):
+        return JSONResponse(status_code=401, content={"error": "Неавторизован"})
+    try:
+        game = await get_game_by_code(game_code)
+        if not game:
+            return JSONResponse(status_code=404, content={"error": "Игра не найдена"})
+
+        data = await request.json()
+        story_id = (data.get("story_id") or "").strip()
+        if not story_id:
+            return JSONResponse(status_code=400, content={"error": "story_id обязателен"})
+
+        try:
+            story = _load_admin_story_json(story_id)
+        except FileNotFoundError as e:
+            return JSONResponse(status_code=404, content={"error": str(e)})
+        except ValueError as e:
+            return JSONResponse(status_code=400, content={"error": str(e)})
+
+        stats = await database.apply_story_to_game(game.game_id, story)
+        await database.set_game_story_id(game.game_id, story_id)
+
+        return {
+            "success": True,
+            "story_id": story_id,
+            "story_title": story.get("title") or story_id,
+            "stats": stats,
+            "message": "Сюжет применён и сохранён",
+        }
+    except HTTPException as he:
+        return JSONResponse(status_code=he.status_code, content={"error": he.detail})
+    except Exception as e:
+        api_logger.error(f"Ошибка применения сюжета: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 @app.get("/api/admin/games/{game_code}/config")
 async def get_game_config_admin(game_code: str, request: Request):

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Королевская биржа - Тогучин</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=san-francisco-web">
 </head>
 <body>
     <!-- Начальный экран -->
@@ -114,14 +114,18 @@
                     </div>
                     <div class="header-text">
                         <h1>Королевская Биржа</h1>
-                        <h2>Бургундия. Тогучин</h2>
                         <div class="round-info">
                             <span>Раунд: <strong id="current-round">1</strong></span>
                             <span>Игроков: <strong id="num-players">0</strong></span>
                         </div>
+                        <div class="header-finish-round-wrap">
+                            <button type="button" id="finish-round-btn" class="header-control-btn" title="Завершить раунд">Завершить раунд</button>
+                            <span id="round-ready-indicator" class="round-ready-indicator" aria-live="polite">0/0</span>
+                        </div>
                     </div>
                     <!-- Кнопки управления раундом: События раунда, Видео раунда, Следующий раунд, Х (меню) -->
                     <div class="round-control">
+                        <div class="round-control-row round-control-row--main">
                         <button id="show-round-events-btn" class="header-control-btn" onclick="showRoundEventsFromHeader()" title="События">События</button>
                         <button id="show-round-video-header-btn" class="header-control-btn" onclick="showRoundVideoFromHeader()" title="Видео" style="display: none;">Видео</button>
                         <button id="next-round-btn" class="header-control-btn" style="display: none;">Следующий раунд</button>
@@ -131,6 +135,13 @@
                                 <button type="button" id="new-game-btn" class="header-menu-item">Новая игра</button>
                                 <button type="button" id="restart-game-btn" class="header-menu-item" style="display: none;" title="Откатить к снимку 0">Начать сначала</button>
                                 <button type="button" id="final-results-btn" class="header-menu-item" style="display: none;">Подвести итоги</button>
+                            </div>
+                        </div>
+                        </div>
+                        <div class="round-control-row round-control-row--music">
+                            <div class="header-music-wrap">
+                                <input type="range" id="bg-music-volume" class="header-music-volume" min="0" max="100" value="70" title="Громкость" aria-label="Громкость фоновой музыки" aria-valuemin="0" aria-valuemax="100">
+                                <button type="button" id="bg-music-toggle" class="header-control-btn header-music-btn music-off" aria-pressed="false" title="Фоновая музыка">♪</button>
                             </div>
                         </div>
                     </div>
@@ -221,25 +232,30 @@
             <button class="modal-nav modal-nav-right" id="resource-modal-nav-right" title="Следующий ресурс">›</button>
             <div class="modal-body modal-body-resource">
                 <div class="modal-resource-col-left">
-                    <div id="resource-modal-image-container" class="modal-resource-image-container">
-                        <img id="resource-modal-image" src="" alt="" class="modal-resource-image" style="display: none;">
+                    <div id="resource-modal-visual" class="modal-resource-visual">
+                        <div id="resource-modal-bg" class="modal-resource-bg" role="img" aria-hidden="true"></div>
+                        <div class="modal-resource-hero-wrap">
+                            <img id="resource-modal-image" src="" alt="" class="modal-resource-hero-image" style="display: none;">
+                        </div>
+                        <div class="modal-resource-name-overlay">
+                            <h2 id="resource-modal-name" class="modal-resource-name"></h2>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-resource-col-right">
-                    <h2 id="resource-modal-name" class="modal-resource-name"></h2>
-                    <div class="modal-resource-stats">
-                        <div class="modal-stat-item">
-                            <span class="modal-stat-label">Текущая цена:</span>
-                            <span id="resource-modal-price" class="modal-stat-value"></span>
+                    <div class="modal-resource-price-block">
+                        <div class="modal-resource-price-value">
+                            <span id="resource-modal-price-amount" class="modal-resource-price-amount"></span>
+                            <span class="modal-resource-price-currency">монет</span>
                         </div>
-                        <div class="modal-stat-item">
-                            <span class="modal-stat-label">Изменение за раунд:</span>
-                            <span id="resource-modal-change-round" class="modal-stat-value"></span>
+                        <div class="modal-resource-change-pills">
+                            <span id="resource-modal-change-round" class="modal-change-pill modal-change-pill-round"></span>
+                            <span id="resource-modal-change-start" class="modal-change-pill modal-change-pill-start"></span>
                         </div>
-                        <div class="modal-stat-item">
-                            <span class="modal-stat-label">Изменение с начала игры:</span>
-                            <span id="resource-modal-change-start" class="modal-stat-value"></span>
-                        </div>
+                    </div>
+                    <div id="resource-modal-info-block" class="modal-resource-info-block" style="display: none;">
+                        <img id="resource-modal-info-icon" src="" alt="" class="modal-resource-info-icon">
+                        <p id="resource-modal-info-text" class="modal-resource-info-text"></p>
                     </div>
                     <h3 class="modal-chart-title">График цены</h3>
                     <div class="modal-chart-container">
@@ -258,9 +274,14 @@
             <button class="modal-nav modal-nav-right" id="modal-nav-right" title="Следующий объект">›</button>
             <div class="modal-body modal-body-building">
                 <div class="modal-building-col-left">
-                    <div id="modal-building-image-container" class="modal-building-image-container">
-                        <img id="modal-building-image" src="" alt="" class="modal-building-image" style="display: none;">
-                        <h2 id="modal-building-name" class="modal-building-name"></h2>
+                    <div id="modal-building-visual" class="modal-building-visual">
+                        <div id="modal-building-bg" class="modal-building-bg" role="img" aria-hidden="true"></div>
+                        <div class="modal-building-hero-wrap">
+                            <img id="modal-building-image" src="" alt="" class="modal-building-hero-image" style="display: none;">
+                        </div>
+                        <div class="modal-building-name-overlay">
+                            <h2 id="modal-building-name" class="modal-building-name"></h2>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-building-col-right">
@@ -274,12 +295,20 @@
                             <span id="modal-building-percentage" class="modal-stat-value"></span>
                         </div>
                     </div>
+                    <div class="modal-building-round-income" id="modal-building-round-income">
+                        <div class="modal-building-round-income-label">Доход в текущем раунде</div>
+                        <div id="modal-building-round-income-value" class="modal-building-round-income-value"></div>
+                    </div>
+                    <div id="modal-building-info-block" class="modal-building-info-block" style="display: none;">
+                        <img id="modal-building-info-icon" src="" alt="" class="modal-building-info-icon">
+                        <p id="modal-building-info-text" class="modal-building-info-text"></p>
+                    </div>
                     <div class="modal-building-cost" id="modal-building-cost">
                         <div class="modal-stat-label">Стоимость в ресурсах:</div>
                         <ul id="modal-building-cost-list" class="modal-building-cost-list"></ul>
                     </div>
                     <div class="modal-building-income" id="modal-building-income">
-                        <div class="modal-stat-label">Приносит:</div>
+                        <div class="modal-stat-label">Базовый доход:</div>
                         <div id="modal-building-income-value" class="modal-building-income-value"></div>
                     </div>
                 </div>
@@ -323,8 +352,10 @@
                         <span class="player-modal-money-value" id="player-modal-money-value"></span>
                         <span class="player-modal-money-suffix">монет</span>
                     </div>
-                    <div class="player-modal-owns-title">Владеет:</div>
+                    <div class="player-modal-owns-title">Объекты</div>
                     <ul id="player-modal-buildings" class="player-modal-buildings-list"></ul>
+                    <div class="player-modal-owns-title player-modal-resources-section-title">Ресурсы</div>
+                    <ul id="player-modal-resources" class="player-modal-buildings-list player-modal-resources-list"></ul>
                 </div>
             </div>
         </div>
@@ -404,7 +435,29 @@
         </div>
     </div>
 
-    <script src="/static/script.js?v=leaderboard-portfolio-2"></script>
+    <div id="finish-round-modal" class="finish-round-modal" style="display: none;" aria-hidden="true" role="dialog" aria-labelledby="finish-round-modal-title">
+        <div class="finish-round-modal-dialog" role="document">
+            <h2 id="finish-round-modal-title" class="finish-round-modal-title">Завершить раунд?</h2>
+            <div class="finish-round-modal-actions">
+                <button type="button" id="finish-round-modal-cancel" class="finish-round-modal-btn finish-round-modal-btn--cancel">Нет</button>
+                <button type="button" id="finish-round-modal-confirm" class="finish-round-modal-btn finish-round-modal-btn--confirm">Да</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="next-round-modal" class="finish-round-modal" style="display: none;" aria-hidden="true" role="dialog" aria-labelledby="next-round-modal-title">
+        <div class="finish-round-modal-dialog" role="document">
+            <h2 id="next-round-modal-title" class="finish-round-modal-title">Следующий раунд?</h2>
+            <div class="finish-round-modal-actions">
+                <button type="button" id="next-round-modal-cancel" class="finish-round-modal-btn finish-round-modal-btn--cancel">Нет</button>
+                <button type="button" id="next-round-modal-confirm" class="finish-round-modal-btn finish-round-modal-btn--confirm">Да</button>
+            </div>
+        </div>
+    </div>
+
+    <audio id="bg-music-audio" loop preload="metadata" src="/static/audio/medieval-city.mp3"></audio>
+
+    <script src="/static/script.js?v=san-francisco-web"></script>
 </body>
 </html>
 

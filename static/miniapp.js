@@ -440,7 +440,27 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (noBtn) noBtn.addEventListener('click', () => closeMiniappNextRoundConfirmModal());
     if (backdrop) backdrop.addEventListener('click', () => closeMiniappNextRoundConfirmModal());
-    if (yesBtn) yesBtn.addEventListener('click', () => closeMiniappNextRoundConfirmModal());
+    if (yesBtn) {
+        yesBtn.addEventListener('click', async () => {
+            closeMiniappNextRoundConfirmModal();
+            try {
+                const response = await fetch(addGameCodeToUrl('/api/miniapp/player/ready-next-round'), {
+                    method: 'POST',
+                    headers: {
+                        'X-Telegram-Init-Data': getTelegramInitDataHeader(),
+                    },
+                });
+                if (!response.ok) {
+                    showToast('Не удалось подтвердить готовность', 'error');
+                    return;
+                }
+                await loadPlayerState();
+            } catch (e) {
+                console.error('ready-next-round:', e);
+                showToast('Ошибка сети', 'error');
+            }
+        });
+    }
     document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape' || !modal) return;
         if (modal.classList.contains('miniapp-next-round-modal--open')) {
@@ -893,6 +913,7 @@ async function loadPlayerState() {
 
         const data = await response.json();
         playerState = data;
+        syncTradingLockUi();
 
         // Обновляем UI
         try {
@@ -960,7 +981,26 @@ function closeMiniappNextRoundConfirmModal() {
     modal.setAttribute('aria-hidden', 'true');
 }
 
-// Переключение раунда только на вебе; в миниапе кнопки модалки пока только закрывают окно (логику добавим позже).
+function isTradingLocked() {
+    return !!(playerState && playerState.trading_locked);
+}
+
+function syncTradingLockUi() {
+    const locked = isTradingLocked();
+    document.body.classList.toggle('miniapp-trading-locked', locked);
+    const nextBtn = document.getElementById('miniapp-next-round-btn');
+    if (nextBtn) {
+        nextBtn.disabled = locked;
+        nextBtn.setAttribute('aria-disabled', locked ? 'true' : 'false');
+    }
+}
+
+function guardTradingAction() {
+    if (!isTradingLocked()) return true;
+    return false;
+}
+
+// Переключение раунда на вебе; в миниапе «Да» — готовность к следующему раунду.
 
 async function openMiniappRoundEventsModal() {
     try {
@@ -2274,6 +2314,7 @@ function updateSellTotal() {
 
 // Подтверждение покупки
 async function confirmBuyResource() {
+    if (!guardTradingAction()) return;
     if (!currentResource) return;
     
     const quantity = parseInt(document.getElementById('buy-resource-quantity-input').value) || 1;
@@ -2328,6 +2369,7 @@ async function confirmBuyResource() {
 
 // Подтверждение продажи
 async function confirmSellResource() {
+    if (!guardTradingAction()) return;
     if (!currentResource) return;
     
     const quantity = parseInt(document.getElementById('sell-resource-quantity-input').value) || 1;
@@ -3002,6 +3044,7 @@ function updateBuildTotal() {
 
 // Подтверждение строительства объекта
 async function confirmBuildBuilding() {
+    if (!guardTradingAction()) return;
     if (!currentBuilding) return;
     
     const quantity = parseInt(document.getElementById('build-building-quantity-input').value) || 1;
@@ -3139,6 +3182,7 @@ function updateSellBuildingTotal() {
 
 // Подтверждение продажи объекта
 async function confirmSellBuilding() {
+    if (!guardTradingAction()) return;
     if (!currentBuilding) return;
     
     const quantity = parseInt(document.getElementById('sell-building-quantity-input').value) || 1;

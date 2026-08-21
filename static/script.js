@@ -179,7 +179,20 @@ function connectWebSocket() {
     };
 }
 
+function updateRoundReadyIndicator(data) {
+    const el = document.getElementById('round-ready-indicator');
+    if (!el) return;
+    const c = data.ready_next_round_count;
+    const t = data.ready_next_round_total;
+    if (typeof c === 'number' && typeof t === 'number') {
+        el.textContent = c + '/' + t;
+    } else if (typeof data.num_players === 'number') {
+        el.textContent = '0/' + data.num_players;
+    }
+}
+
 function updateUI(data) {
+    updateRoundReadyIndicator(data);
     // Обновляем информацию о раунде
     // НЕ перезаписываем, если мы установили раунд вручную
     if (data.current_round !== undefined) {
@@ -249,14 +262,69 @@ function mergeLeaderboardRows(incoming, previous) {
     });
 }
 
+/** Кэш ключей отрисовки — не пересобираем DOM при неизменных данных (WS раз в секунду). */
+let lastLeaderboardRenderKey = '';
+let lastBuildingsRenderKey = '';
+let lastPricesRenderKey = '';
+
+function getLeaderboardRenderKey(rows) {
+    return JSON.stringify((rows || []).map((p) => ({
+        id: p.player_id,
+        name: p.character_name || p.name || '',
+        total: Math.round(p.total_value || 0),
+        growthRound: Math.round(p.growth_round_percent || p.growth_percent || 0),
+        growthGame: Math.round(p.growth_game_percent || 0),
+    })));
+}
+
+function getBuildingsRenderKey(buildings) {
+    const map = {};
+    (buildings || []).forEach((b) => {
+        if (!b || !b.name) return;
+        map[b.name] = {
+            count: b.count || 0,
+            pct: Math.round(b.players_percentage || 0),
+            trend: b.players_pct_trend || 'same',
+        };
+    });
+    return JSON.stringify(map);
+}
+
+function getPricesRenderKey(prices) {
+    const pricesByResource = {};
+    (prices || []).forEach((p) => { pricesByResource[p.resource] = p; });
+    return JSON.stringify(
+        allResourcesOrder.map((res) => {
+            const p = pricesByResource[res];
+            if (!p) return null;
+            return {
+                resource: p.resource,
+                price: Math.round(p.current_price || 0),
+                prev: Math.round(p.change_from_prev_percent || 0),
+                start: Math.round(p.change_from_start_percent || 0),
+            };
+        }).filter(Boolean)
+    );
+}
+
 function updateLeaderboard(leaderboard) {
     const tbody = document.getElementById('leaderboard-body');
-    tbody.innerHTML = '';
     const incoming = Array.isArray(leaderboard) ? leaderboard : [];
     const merged = mergeLeaderboardRows(incoming, lastLeaderboardData);
+    const renderKey = getLeaderboardRenderKey(merged);
+    if (renderKey === lastLeaderboardRenderKey && tbody && tbody.children.length > 0) {
+        lastLeaderboardData = merged.slice();
+        return;
+    }
+    lastLeaderboardRenderKey = renderKey;
+    tbody.innerHTML = '';
     lastLeaderboardData = merged.slice();
 
-    if (lastLeaderboardData.length > 0 && !Object.prototype.hasOwnProperty.call(lastLeaderboardData[0], 'buildings_portfolio')) {
+    const needsPortfolioEnrich = lastLeaderboardData.length > 0 && (
+        !Object.prototype.hasOwnProperty.call(lastLeaderboardData[0], 'buildings_portfolio') ||
+        !Object.prototype.hasOwnProperty.call(lastLeaderboardData[0], 'resources_portfolio')
+    );
+    if (needsPortfolioEnrich) {
         if (!leaderboardEnrichPromise) {
             leaderboardEnrichPromise = fetch(addGameCodeToUrl('/api/leaderboard'))
                 .then(function (res) { return res.json(); })
@@ -313,6 +381,16 @@ function updateLeaderboard(leaderboard) {
 }
 
 function updatePrices(prices) {
+    const renderKey = getPricesRenderKey(prices);
+    const hasRenderedRows = [1, 2, 3].some((i) => {
+        const tbody = document.getElementById('prices-body-' + i);
+        return tbody && tbody.children.length > 0;
+    });
+    if (renderKey === lastPricesRenderKey && hasRenderedRows) {
+        return;
+    }
+    lastPricesRenderKey = renderKey;
+
     const pricesByResource = {};
     (prices || []).forEach(p => { pricesByResource[p.resource] = p; });
     const ordered = allResourcesOrder.map(res => pricesByResource[res]).filter(Boolean);
@@ -361,21 +439,76 @@ function updatePrices(prices) {
     });
 }
 
-/** Картинка объекта в модалке: design/картинки для карточек объектов/<имя в нижнем регистре> (1).png */
-function webBuildingModalImageUrl(buildingName) {
+/** Фон объекта в модалке: design/картинки для карточек объектов/<имя> (1).png */
+function webBuildingModalBgUrl(buildingName) {
     if (!buildingName) return '';
     const dir = 'картинки для карточек объектов';
     const file = buildingName.toLowerCase() + ' (1).png';
     return '/design/' + encodeURIComponent(dir) + '/' + encodeURIComponent(file);
 }
 
-/** Картинка ресурса в модалке: design/картинки для веба (ресурсы)/<Имя> (1).png */
-function webResourceModalImageUrl(resourceName) {
+/** Картинка объекта поверх фона: design/картинки для веба/<имя>.png */
+function webBuildingModalHeroUrl(buildingName) {
+    if (!buildingName) return { primary: '', fallback: '' };
+    const dir = 'картинки для веба';
+    const fileMap = {
+        'Лесоповал': 'лесоповал.png',
+        'Каменоломня': 'каменоломня.png',
+        'Теплицы': 'теплицы.png',
+        'Трактир': 'Трактир.png',
+        'Посевные поля': 'Посевные поля.png',
+        'Рыболовня': 'рыболовня.png',
+        'Кузнечная': 'кузнечная.png',
+        'Ферма': 'ферма.png',
+        'Постоялый двор': 'постоялый двор.png',
+        'Куртизанские палатки': 'куртизанские палатки.png',
+        'Золотой рудник': 'золотой рудник.png',
+    };
+    const primaryFile = fileMap[buildingName] || (buildingName.toLowerCase() + '.png');
+    const fallbackFile = buildingName + '.png';
+    const base = '/design/' + encodeURIComponent(dir) + '/';
+    return {
+        primary: base + encodeURIComponent(primaryFile),
+        fallback: base + encodeURIComponent(fallbackFile),
+    };
+}
+
+function formatBuildingIncomeLabel(income) {
+    if (!income) return '0';
+    const parts = [];
+    const coins = income['монеты'] || income.monеты || 0;
+    if (coins) parts.push(`${coins} монет`);
+    const resources = income['ресурсы'] || income.ресурсы || {};
+    Object.entries(resources).forEach(([res, amt]) => {
+        if (amt) parts.push(`${res}: ${amt}`);
+    });
+    return parts.length ? parts.join(', ') : '0';
+}
+
+/** Фон ресурса в модалке: design/фоны ресурсов/<Имя>.png */
+function webResourceModalBgUrl(resourceName) {
     if (!resourceName) return '';
     const name = resourceName.charAt(0).toUpperCase() + resourceName.slice(1);
-    const dir = 'картинки для веба (ресурсы)';
-    const file = name + ' (1).png';
-    return '/design/' + encodeURIComponent(dir) + '/' + encodeURIComponent(file);
+    const dir = 'фоны ресурсов';
+    return '/design/' + encodeURIComponent(dir) + '/' + encodeURIComponent(name + '.png');
+}
+
+/** Картинка ресурса в модалке: design/картинки ресурсов/<имя>.png */
+function webResourceModalImageUrl(resourceName) {
+    if (!resourceName) return '';
+    const dir = 'картинки ресурсов';
+    const lower = resourceName.toLowerCase();
+    const cap = resourceName.charAt(0).toUpperCase() + resourceName.slice(1);
+    return {
+        primary: '/design/' + encodeURIComponent(dir) + '/' + encodeURIComponent(lower + '.png'),
+        fallback: '/design/' + encodeURIComponent(dir) + '/' + encodeURIComponent(cap + '.png'),
+    };
+}
+
+function webResourceIconUrl(resourceName) {
+    if (!resourceName) return '';
+    const name = resourceName.charAt(0).toUpperCase() + resourceName.slice(1);
+    return '/design/icons/' + encodeURIComponent(name + '.png');
 }
 
 // Порядок ресурсов для навигации (должен совпадать с порядком в таблице цен - sorted по алфавиту)
@@ -438,6 +571,7 @@ function fillPlayerModalCard(player, rankIndex) {
     const pillRound = document.getElementById('player-modal-pill-round');
     const pillGame = document.getElementById('player-modal-pill-game');
     const listEl = document.getElementById('player-modal-buildings');
+    const resourcesListEl = document.getElementById('player-modal-resources');
     const imgEl = document.getElementById('player-modal-avatar');
     const fbEl = document.getElementById('player-modal-avatar-fallback');
 
@@ -510,13 +644,49 @@ function fillPlayerModalCard(player, rankIndex) {
             listEl.appendChild(li);
         }
     }
+
+    if (resourcesListEl) {
+        resourcesListEl.innerHTML = '';
+        const resourcesPortfolio = player.resources_portfolio || [];
+        if (resourcesPortfolio.length > 0) {
+            resourcesPortfolio.forEach((row) => {
+                const rname = row && row.name;
+                if (!rname) return;
+                const amount = typeof row.amount === 'number' ? row.amount : parseFloat(row.amount) || 0;
+                const li = document.createElement('li');
+                const icon = document.createElement('img');
+                icon.className = 'player-modal-building-icon';
+                icon.alt = '';
+                icon.src = webResourceIconUrl(rname);
+                icon.onerror = () => { icon.style.visibility = 'hidden'; };
+                const label = document.createElement('span');
+                label.className = 'player-modal-building-name';
+                const displayName = rname.charAt(0).toUpperCase() + rname.slice(1);
+                label.textContent = displayName;
+                const amtEl = document.createElement('span');
+                amtEl.className = 'player-modal-resource-amount';
+                amtEl.textContent = Math.round(amount).toLocaleString('ru-RU');
+                li.appendChild(icon);
+                li.appendChild(label);
+                li.appendChild(amtEl);
+                resourcesListEl.appendChild(li);
+            });
+        } else {
+            const li = document.createElement('li');
+            li.className = 'player-modal-buildings-empty';
+            li.textContent = 'Нет ресурсов';
+            resourcesListEl.appendChild(li);
+        }
+    }
 }
 
 /** Карточка игрока: при урезанных данных WS подгружаем строку из GET /api/leaderboard. */
 function fillPlayerModalFromIndex(index) {
     const base = lastLeaderboardData[index];
     if (!base) return;
-    if (Object.prototype.hasOwnProperty.call(base, 'buildings_portfolio')) {
+    const hasBuildings = Object.prototype.hasOwnProperty.call(base, 'buildings_portfolio');
+    const hasResources = Object.prototype.hasOwnProperty.call(base, 'resources_portfolio');
+    if (hasBuildings && hasResources) {
         fillPlayerModalCard(base, index);
         return;
     }
@@ -571,7 +741,12 @@ function navigatePlayerModal(delta) {
 }
 
 function updateBuildings(buildings) {
+    const renderKey = getBuildingsRenderKey(buildings);
     const grid = document.getElementById('buildings-grid');
+    if (renderKey === lastBuildingsRenderKey && grid && grid.children.length > 0) {
+        return;
+    }
+    lastBuildingsRenderKey = renderKey;
     grid.innerHTML = '';
     
     // Создаем словарь для быстрого поиска данных по названию
@@ -624,17 +799,17 @@ function updateBuildings(buildings) {
         
         // Получаем информацию о стоимости и доходе
         const buildingCosts = {
-            "Лесоповал": {"железо": 5, "рабы": 3},
-            "Каменоломня": {"дерево": 10, "железо": 5, "рабы": 3},
+            "Лесоповал": {"железо": 7, "дерево": 8, "камень": 2},
+            "Каменоломня": {"дерево": 10, "железо": 6, "камень": 10},
             "Теплицы": {"дерево": 16, "железо": 5, "овощи": 8},
             "Трактир": {"дерево": 14, "камень": 10, "железо": 3, "золото": 1},
-            "Посевные поля": {"дерево": 10, "зерно": 12, "рабы": 2},
+            "Посевные поля": {"дерево": 10, "зерно": 12, "железо": 2, "камень": 4},
             "Рыболовня": {"дерево": 18, "железо": 6, "камень": 5},
             "Кузнечная": {"камень": 18, "железо": 12, "дерево": 10, "золото": 2},
             "Ферма": {"дерево": 16, "камень": 10, "скот": 4, "зерно": 8},
             "Постоялый двор": {"дерево": 20, "камень": 14, "железо": 5, "золото": 2},
-            "Куртизанские палатки": {"дерево": 14, "золото": 5, "рабы": 5},
-            "Золотой рудник": {"камень": 20, "железо": 10, "рабы": 5, "золото": 3}
+            "Куртизанские палатки": {"дерево": 16, "золото": 7, "рабы": 2},
+            "Золотой рудник": {"камень": 25, "железо": 11, "рабы": 2, "золото": 4}
         };
         
         const buildingIncome = {
@@ -744,73 +919,100 @@ document.addEventListener('keydown', (event) => {
 });
 
 // Функция для открытия модального окна с деталями объекта
-function openBuildingModal(buildingName, cardCount, cardPercentage) {
-    // Находим индекс текущего объекта
+async function openBuildingModal(buildingName, cardCount, cardPercentage) {
     currentBuildingIndex = allBuildingsOrder.indexOf(buildingName);
     if (currentBuildingIndex === -1) {
         currentBuildingIndex = 0;
     }
-    
-    loadBuildingModalData(buildingName, cardCount, cardPercentage);
-    
-    // Обновляем состояние кнопок навигации
+
+    await loadBuildingModalData(buildingName, cardCount, cardPercentage);
     updateNavigationButtons();
 }
 
-// Функция для загрузки данных объекта в модальное окно
-function loadBuildingModalData(buildingName, cardCount, cardPercentage) {
+async function loadBuildingModalData(buildingName, cardCount, cardPercentage) {
     try {
-        // Используем данные из кэша, если они есть, иначе из параметров
         const cachedData = buildingsDataCache[buildingName];
-        const count = cachedData ? cachedData.count : cardCount;
-        const percentage = cachedData ? cachedData.percentage : cardPercentage;
-        
-        const imagePath = webBuildingModalImageUrl(buildingName);
+        const fallbackCount = cachedData ? cachedData.count : cardCount;
+        const fallbackPercentage = cachedData ? cachedData.percentage : cardPercentage;
+
+        const bgEl = document.getElementById('modal-building-bg');
+        const bgUrl = webBuildingModalBgUrl(buildingName);
+        if (bgEl) {
+            bgEl.style.backgroundImage = bgUrl ? `url("${bgUrl}")` : 'none';
+        }
+
+        const heroUrls = webBuildingModalHeroUrl(buildingName);
         const imageEl = document.getElementById('modal-building-image');
-        imageEl.src = imagePath;
-        imageEl.alt = buildingName;
-        imageEl.style.display = 'block';
-        imageEl.onerror = function () {
-            this.style.display = 'none';
-        };
-        
-        document.getElementById('modal-building-name').textContent = buildingName;
+        if (imageEl && heroUrls) {
+            imageEl.alt = buildingName;
+            imageEl.style.display = 'block';
+            imageEl.onerror = function onHeroErr() {
+                if (heroUrls.fallback && this.src !== heroUrls.fallback) {
+                    this.src = heroUrls.fallback;
+                    this.onerror = function () { this.style.display = 'none'; };
+                } else {
+                    this.style.display = 'none';
+                }
+            };
+            imageEl.src = heroUrls.primary;
+        }
+
+        const nameEl = document.getElementById('modal-building-name');
+        if (nameEl) nameEl.textContent = buildingName.toUpperCase();
+
+        const response = await fetch(addGameCodeToUrl(`/api/building/${encodeURIComponent(buildingName)}`));
+        if (!response.ok) {
+            console.error('Ошибка API объекта:', response.status, response.statusText);
+            document.getElementById('modal-building-count').textContent = fallbackCount;
+            document.getElementById('modal-building-percentage').textContent = `${fallbackPercentage}%`;
+            modal.style.display = 'block';
+            return;
+        }
+
+        const data = await response.json();
+        if (data.error) {
+            console.error('Ошибка загрузки объекта:', data.error);
+            return;
+        }
+
+        const count = data.count != null ? data.count : fallbackCount;
+        const percentage = data.players_percentage != null ? data.players_percentage : fallbackPercentage;
         document.getElementById('modal-building-count').textContent = count;
         document.getElementById('modal-building-percentage').textContent = `${percentage}%`;
-        
-        // Заполняем информацию о стоимости и доходе
-        const buildingCosts = {
-            "Лесоповал": {"железо": 5, "рабы": 3},
-            "Каменоломня": {"дерево": 10, "железо": 5, "рабы": 3},
-            "Теплицы": {"дерево": 16, "железо": 5, "овощи": 8},
-            "Трактир": {"дерево": 14, "камень": 10, "железо": 3, "золото": 1},
-            "Посевные поля": {"дерево": 10, "зерно": 12, "рабы": 2},
-            "Рыболовня": {"дерево": 18, "железо": 6, "камень": 5},
-            "Кузнечная": {"камень": 18, "железо": 12, "дерево": 10, "золото": 2},
-            "Ферма": {"дерево": 16, "камень": 10, "скот": 4, "зерно": 8},
-            "Постоялый двор": {"дерево": 20, "камень": 14, "железо": 5, "золото": 2},
-            "Куртизанские палатки": {"дерево": 14, "золото": 5, "рабы": 5},
-            "Золотой рудник": {"камень": 20, "железо": 10, "рабы": 5, "золото": 3}
-        };
-        
-        const buildingIncome = {
-            "Лесоповал": {"монеты": 0, "ресурсы": {"дерево": 3}},
-            "Каменоломня": {"монеты": 0, "ресурсы": {"камень": 3}},
-            "Теплицы": {"монеты": 0, "ресурсы": {"овощи": 3}},
-            "Трактир": {"монеты": 63, "ресурсы": {}},
-            "Посевные поля": {"монеты": 0, "ресурсы": {"зерно": 3}},
-            "Рыболовня": {"монеты": 0, "ресурсы": {"рыба": 3}},
-            "Кузнечная": {"монеты": 0, "ресурсы": {"железо": 4}},
-            "Ферма": {"монеты": 0, "ресурсы": {"скот": 3}},
-            "Постоялый двор": {"монеты": 147, "ресурсы": {}},
-            "Куртизанские палатки": {"монеты": 167, "ресурсы": {}},
-            "Золотой рудник": {"монеты": 0, "ресурсы": {"золото": 2}}
-        };
-        
-        // Заполняем стоимость
+
+        const roundIncomeEl = document.getElementById('modal-building-round-income-value');
+        const roundLabel = document.querySelector('.modal-building-round-income-label');
+        if (roundIncomeEl) {
+            roundIncomeEl.textContent = data.current_round_income_label
+                || formatBuildingIncomeLabel(data.current_round_income);
+        }
+        if (roundLabel && data.current_round) {
+            roundLabel.textContent = `Доход в раунде ${data.current_round}`;
+        }
+
+        const infoBlock = document.getElementById('modal-building-info-block');
+        const infoTextEl = document.getElementById('modal-building-info-text');
+        const infoIconEl = document.getElementById('modal-building-info-icon');
+        const buildingText = (data.building_text || '').trim();
+        if (infoBlock && infoTextEl) {
+            if (buildingText) {
+                infoTextEl.textContent = buildingText;
+                if (infoIconEl) {
+                    infoIconEl.src = buildingIconUrlForName(buildingName);
+                    infoIconEl.alt = buildingName;
+                    infoIconEl.style.display = 'block';
+                    infoIconEl.onerror = function () { this.style.display = 'none'; };
+                }
+                infoBlock.style.display = 'flex';
+            } else {
+                infoTextEl.textContent = '';
+                infoBlock.style.display = 'none';
+            }
+        }
+
         const costList = document.getElementById('modal-building-cost-list');
         costList.innerHTML = '';
-        const costs = buildingCosts[buildingName] || {};
+        const costs = data.costs || {};
         if (Object.keys(costs).length > 0) {
             Object.entries(costs).forEach(([resource, amount]) => {
                 const li = document.createElement('li');
@@ -822,20 +1024,13 @@ function loadBuildingModalData(buildingName, cardCount, cardPercentage) {
             li.textContent = 'Нет данных';
             costList.appendChild(li);
         }
-        
-        // Заполняем доход
+
         const incomeValue = document.getElementById('modal-building-income-value');
-        const income = buildingIncome[buildingName] || {};
-        if (income.monеты > 0) {
-            incomeValue.textContent = `${income.monеты} монет`;
-        } else if (income.ресурсы && Object.keys(income.ресурсы).length > 0) {
-            const incomeEntries = Object.entries(income.ресурсы);
-            incomeValue.textContent = incomeEntries.map(([res, amt]) => `${res}: ${amt}`).join(', ');
-        } else {
-            incomeValue.textContent = 'Нет данных';
+        if (incomeValue) {
+            incomeValue.textContent = data.base_income_label
+                || formatBuildingIncomeLabel(data.base_income);
         }
-        
-        // Показываем модальное окно
+
         modal.style.display = 'block';
     } catch (error) {
         console.error('Ошибка при загрузке деталей объекта:', error);
@@ -855,23 +1050,22 @@ function updateNavigationButtons() {
 }
 
 // Функция для переключения на предыдущий объект
-function navigateToPrevious() {
+async function navigateToPrevious() {
     if (currentBuildingIndex > 0) {
         currentBuildingIndex--;
         const buildingName = allBuildingsOrder[currentBuildingIndex];
         const cachedData = buildingsDataCache[buildingName] || { count: 0, percentage: 0 };
-        loadBuildingModalData(buildingName, cachedData.count, cachedData.percentage);
+        await loadBuildingModalData(buildingName, cachedData.count, cachedData.percentage);
         updateNavigationButtons();
     }
 }
 
-// Функция для переключения на следующий объект
-function navigateToNext() {
+async function navigateToNext() {
     if (currentBuildingIndex < allBuildingsOrder.length - 1) {
         currentBuildingIndex++;
         const buildingName = allBuildingsOrder[currentBuildingIndex];
         const cachedData = buildingsDataCache[buildingName] || { count: 0, percentage: 0 };
-        loadBuildingModalData(buildingName, cachedData.count, cachedData.percentage);
+        await loadBuildingModalData(buildingName, cachedData.count, cachedData.percentage);
         updateNavigationButtons();
     }
 }
@@ -914,34 +1108,68 @@ async function loadResourceModalData(resourceName) {
         
         // Заполняем данные
         const resourceNameCapitalized = data.name.charAt(0).toUpperCase() + data.name.slice(1);
-        document.getElementById('resource-modal-name').textContent = escapeHtml(resourceNameCapitalized);
-        document.getElementById('resource-modal-price').textContent = `${data.current_price} монет`;
-        
-        // Загружаем картинку ресурса
-        const imagePath = webResourceModalImageUrl(resourceName);
+        document.getElementById('resource-modal-name').textContent = resourceNameCapitalized.toUpperCase();
+
+        const bgEl = document.getElementById('resource-modal-bg');
+        if (bgEl) {
+            const bgUrl = webResourceModalBgUrl(resourceName);
+            bgEl.style.backgroundImage = bgUrl ? `url("${bgUrl}")` : 'none';
+        }
+
+        const imageUrls = webResourceModalImageUrl(resourceName);
         const imageEl = document.getElementById('resource-modal-image');
-        imageEl.src = imagePath;
-        imageEl.alt = resourceNameCapitalized;
-        imageEl.style.display = 'block';
-        imageEl.onerror = function() {
-            this.style.display = 'none';
-        };
-        
-        // Изменение за раунд
-        const changeRoundClass = data.change_from_prev_percent > 0 ? 'positive' : 
+        if (imageEl && imageUrls) {
+            imageEl.alt = resourceNameCapitalized;
+            imageEl.style.display = 'block';
+            imageEl.onerror = function onImgErr() {
+                if (imageUrls.fallback && this.src !== imageUrls.fallback) {
+                    this.src = imageUrls.fallback;
+                    this.onerror = function() { this.style.display = 'none'; };
+                } else {
+                    this.style.display = 'none';
+                }
+            };
+            imageEl.src = imageUrls.primary;
+        }
+
+        const infoBlock = document.getElementById('resource-modal-info-block');
+        const infoTextEl = document.getElementById('resource-modal-info-text');
+        const infoIconEl = document.getElementById('resource-modal-info-icon');
+        const resourceText = (data.resource_text || '').trim();
+        if (infoBlock && infoTextEl) {
+            if (resourceText) {
+                infoTextEl.textContent = resourceText;
+                if (infoIconEl) {
+                    infoIconEl.src = webResourceIconUrl(resourceName);
+                    infoIconEl.alt = resourceNameCapitalized;
+                    infoIconEl.style.display = 'block';
+                    infoIconEl.onerror = function() { this.style.display = 'none'; };
+                }
+                infoBlock.style.display = 'flex';
+            } else {
+                infoTextEl.textContent = '';
+                infoBlock.style.display = 'none';
+            }
+        }
+
+        const priceAmountEl = document.getElementById('resource-modal-price-amount');
+        if (priceAmountEl) {
+            priceAmountEl.textContent = String(data.current_price);
+        }
+
+        const changeRoundClass = data.change_from_prev_percent > 0 ? 'positive' :
                                  data.change_from_prev_percent < 0 ? 'negative' : 'neutral';
         const changeRoundSign = data.change_from_prev_percent > 0 ? '+' : '';
         const changeRoundEl = document.getElementById('resource-modal-change-round');
         changeRoundEl.textContent = `${changeRoundSign}${Math.round(data.change_from_prev_percent)}%`;
-        changeRoundEl.className = `modal-stat-value ${changeRoundClass}`;
-        
-        // Изменение с начала игры
-        const changeStartClass = data.change_from_start_percent > 0 ? 'positive' : 
+        changeRoundEl.className = `modal-change-pill modal-change-pill-round ${changeRoundClass}`;
+
+        const changeStartClass = data.change_from_start_percent > 0 ? 'positive' :
                                 data.change_from_start_percent < 0 ? 'negative' : 'neutral';
         const changeStartSign = data.change_from_start_percent > 0 ? '+' : '';
         const changeStartEl = document.getElementById('resource-modal-change-start');
         changeStartEl.textContent = `${changeStartSign}${Math.round(data.change_from_start_percent)}%`;
-        changeStartEl.className = `modal-stat-value ${changeStartClass}`;
+        changeStartEl.className = `modal-change-pill modal-change-pill-start ${changeStartClass}`;
         
         // Показываем модальное окно
         if (resourceModal) {
@@ -1014,7 +1242,7 @@ function drawPriceChart(priceHistory) {
 
     if (!priceHistory || priceHistory.length === 0) {
         ctx.fillStyle = '#3a2a1a';
-        ctx.font = '16px Arial';
+        ctx.font = "16px 'San Francisco', -apple-system, sans-serif";
         ctx.textAlign = 'center';
         ctx.fillText('Нет данных для графика', canvas.width / 2, canvas.height / 2);
         return;
@@ -1036,7 +1264,7 @@ function drawPriceChart(priceHistory) {
         .map((r) => byRound.get(r));
     if (standardizedHistory.length === 0) {
         ctx.fillStyle = '#3a2a1a';
-        ctx.font = '16px Arial';
+        ctx.font = "16px 'San Francisco', -apple-system, sans-serif";
         ctx.textAlign = 'center';
         ctx.fillText('Нет данных для графика', canvas.width / 2, canvas.height / 2);
         return;
@@ -1075,7 +1303,7 @@ function drawPriceChart(priceHistory) {
         ctx.stroke();
 
         ctx.fillStyle = '#3a2a1a';
-        ctx.font = '12px Arial';
+        ctx.font = "12px 'San Francisco', -apple-system, sans-serif";
         ctx.textAlign = 'right';
         ctx.fillText(Math.round(price).toString(), padding - 10, y + 4);
     }
@@ -1120,7 +1348,7 @@ function drawPriceChart(priceHistory) {
             n <= 12 || index === 0 || index === n - 1 || index % labelStride === 0;
         if (showLabel) {
             ctx.fillStyle = '#3a2a1a';
-            ctx.font = '11px Arial';
+            ctx.font = "11px 'San Francisco', -apple-system, sans-serif";
             ctx.textAlign = 'center';
             ctx.fillText(String(point.round), x, canvas.height - padding + 20);
             ctx.fillStyle = '#006400';
@@ -1128,7 +1356,7 @@ function drawPriceChart(priceHistory) {
     });
 
     ctx.fillStyle = '#3a2a1a';
-    ctx.font = '14px Arial';
+    ctx.font = "14px 'San Francisco', -apple-system, sans-serif";
     ctx.textAlign = 'center';
     ctx.fillText('Раунд', canvas.width / 2, canvas.height - 10);
 
@@ -1137,6 +1365,70 @@ function drawPriceChart(priceHistory) {
     ctx.rotate(-Math.PI / 2);
     ctx.fillText('Цена (монеты)', 0, 0);
     ctx.restore();
+}
+
+const KB_BG_MUSIC_VOL = 'kb_bg_music_vol';
+const KB_BG_MUSIC_MUTED = 'kb_bg_music_muted';
+
+function setupBackgroundMusic() {
+    const audio = document.getElementById('bg-music-audio');
+    const toggle = document.getElementById('bg-music-toggle');
+    const slider = document.getElementById('bg-music-volume');
+    if (!audio || !toggle || !slider) return;
+
+    function syncUi() {
+        const audible = !audio.paused && audio.volume > 0;
+        toggle.classList.toggle('music-on', audible);
+        toggle.classList.toggle('music-off', !audible);
+        toggle.setAttribute('aria-pressed', audible ? 'true' : 'false');
+    }
+
+    const rawVol = parseInt(localStorage.getItem(KB_BG_MUSIC_VOL), 10);
+    let volPct = Number.isFinite(rawVol) ? rawVol : 70;
+    volPct = Math.max(0, Math.min(100, volPct));
+    slider.value = String(volPct);
+    audio.volume = volPct / 100;
+    if (localStorage.getItem(KB_BG_MUSIC_MUTED) === '1') {
+        audio.pause();
+    }
+
+    toggle.addEventListener('click', async () => {
+        if (!audio.paused && audio.volume > 0) {
+            audio.pause();
+            localStorage.setItem(KB_BG_MUSIC_MUTED, '1');
+            syncUi();
+            return;
+        }
+        if (audio.volume <= 0 || parseInt(slider.value, 10) === 0) {
+            volPct = 45;
+            slider.value = String(volPct);
+            audio.volume = volPct / 100;
+            localStorage.setItem(KB_BG_MUSIC_VOL, slider.value);
+        }
+        try {
+            await audio.play();
+            localStorage.setItem(KB_BG_MUSIC_MUTED, '0');
+        } catch (err) {
+            console.warn('Фоновая музыка:', err);
+        }
+        syncUi();
+    });
+
+    slider.addEventListener('input', () => {
+        volPct = parseInt(slider.value, 10);
+        volPct = Math.max(0, Math.min(100, volPct));
+        audio.volume = volPct / 100;
+        localStorage.setItem(KB_BG_MUSIC_VOL, String(volPct));
+        if (volPct === 0) {
+            audio.pause();
+            localStorage.setItem(KB_BG_MUSIC_MUTED, '1');
+        }
+        syncUi();
+    });
+
+    audio.addEventListener('play', syncUi);
+    audio.addEventListener('pause', syncUi);
+    syncUi();
 }
 
 // Функции управления игровым flow
@@ -1330,29 +1622,135 @@ function setupGameFlow() {
         });
     }
 
+    const finishRoundBtn = document.getElementById('finish-round-btn');
+    const finishRoundModal = document.getElementById('finish-round-modal');
+    const finishRoundModalConfirm = document.getElementById('finish-round-modal-confirm');
+    let finishRoundConfirmPending = false;
+
+    function closeFinishRoundModal() {
+        if (!finishRoundModal) return;
+        finishRoundModal.style.display = 'none';
+        finishRoundModal.setAttribute('aria-hidden', 'true');
+    }
+
+    function openFinishRoundModal() {
+        if (!finishRoundModal) return;
+        finishRoundModal.style.display = 'flex';
+        finishRoundModal.setAttribute('aria-hidden', 'false');
+    }
+
+    if (finishRoundBtn && finishRoundModal) {
+        finishRoundBtn.addEventListener('click', () => {
+            if (!getGameCode()) return;
+            openFinishRoundModal();
+        });
+        document.getElementById('finish-round-modal-cancel')?.addEventListener('click', closeFinishRoundModal);
+        finishRoundModal.addEventListener('click', (e) => {
+            if (e.target === finishRoundModal) closeFinishRoundModal();
+        });
+        if (finishRoundModalConfirm) {
+            finishRoundModalConfirm.addEventListener('click', async () => {
+                if (finishRoundConfirmPending) return;
+                const code = getGameCode();
+                if (!code) {
+                    closeFinishRoundModal();
+                    return;
+                }
+                finishRoundConfirmPending = true;
+                finishRoundModalConfirm.disabled = true;
+                try {
+                    const response = await fetch(addGameCodeToUrl('/api/game/finish-round'), { method: 'POST' });
+                    const data = await response.json().catch(() => ({}));
+                    if (response.ok && data.success) {
+                        await loadGameState();
+                        closeFinishRoundModal();
+                    }
+                } catch (e) {
+                    console.error('finish-round:', e);
+                } finally {
+                    finishRoundConfirmPending = false;
+                    finishRoundModalConfirm.disabled = false;
+                }
+            });
+        }
+    }
+
     // Кнопка "Следующий раунд"
     const nextRoundBtn = document.getElementById('next-round-btn');
-    if (nextRoundBtn) {
-        nextRoundBtn.addEventListener('click', async () => {
+    const nextRoundModal = document.getElementById('next-round-modal');
+    const nextRoundModalConfirm = document.getElementById('next-round-modal-confirm');
+    let nextRoundConfirmPending = false;
+
+    function closeNextRoundModal() {
+        if (!nextRoundModal) return;
+        nextRoundModal.style.display = 'none';
+        nextRoundModal.setAttribute('aria-hidden', 'true');
+    }
+
+    function openNextRoundModal() {
+        if (!nextRoundModal) return;
+        nextRoundModal.style.display = 'flex';
+        nextRoundModal.setAttribute('aria-hidden', 'false');
+    }
+
+    if (nextRoundBtn && nextRoundModal) {
+        nextRoundBtn.addEventListener('click', () => {
+            if (!getGameCode()) return;
             const currentRound = gameState.currentRound || parseInt(document.getElementById('current-round')?.textContent) || 1;
-            const code = getGameCode();
-            const reqUrl = addGameCodeToUrl('/api/game/next-round');
-            if (currentRound < 10) {
+            if (currentRound >= 10) return;
+            openNextRoundModal();
+        });
+        document.getElementById('next-round-modal-cancel')?.addEventListener('click', closeNextRoundModal);
+        nextRoundModal.addEventListener('click', (e) => {
+            if (e.target === nextRoundModal) closeNextRoundModal();
+        });
+        if (nextRoundModalConfirm) {
+            nextRoundModalConfirm.addEventListener('click', async () => {
+                if (nextRoundConfirmPending) return;
+                const code = getGameCode();
+                if (!code) {
+                    closeNextRoundModal();
+                    return;
+                }
+                const currentRound = gameState.currentRound || parseInt(document.getElementById('current-round')?.textContent) || 1;
+                if (currentRound >= 10) {
+                    closeNextRoundModal();
+                    return;
+                }
+                const reqUrl = addGameCodeToUrl('/api/game/next-round');
                 const nextRound = currentRound + 1;
+                nextRoundConfirmPending = true;
+                nextRoundModalConfirm.disabled = true;
                 try {
                     const response = await fetch(reqUrl, { method: 'POST' });
                     const data = await response.json().catch(() => ({}));
                     if (response.ok && data.success) {
                         startRound(data.current_round);
+                        closeNextRoundModal();
                         return;
                     }
+                    startRound(nextRound);
+                    closeNextRoundModal();
                 } catch (error) {
                     console.warn('Не удалось обновить раунд на сервере (продолжаем локально):', error);
+                    startRound(nextRound);
+                    closeNextRoundModal();
+                } finally {
+                    nextRoundConfirmPending = false;
+                    nextRoundModalConfirm.disabled = false;
                 }
-                startRound(nextRound);
-            }
-        });
+            });
+        }
     }
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        if (finishRoundModal?.style.display === 'flex') {
+            closeFinishRoundModal();
+        } else if (nextRoundModal?.style.display === 'flex') {
+            closeNextRoundModal();
+        }
+    });
 
     // Кнопка "Начать сначала" — откат к снимку 0 (базовое состояние из админки)
     const restartGameBtn = document.getElementById('restart-game-btn');
@@ -1391,6 +1789,8 @@ function setupGameFlow() {
 
     // Обработчик окончания видео удален - теперь используется callback в playVideo()
     // Это позволяет показывать модальное окно со сводкой после видео раунда
+
+    setupBackgroundMusic();
 }
 
 function playVideo(filename, onComplete) {
@@ -1922,22 +2322,56 @@ async function showRoundSummary(roundNumber) {
         // Загружаем контент раунда (видео) и обновляем видимость кнопок
         await loadRoundContentForCurrentRound();
         
-        // События
+        // События ВЕБ (из админки)
+        const summaryContent = document.querySelector('.round-summary-content');
+        if (summaryContent) {
+            const bgUrl = summary.events && summary.events.bg_image_url;
+            if (bgUrl) {
+                summaryContent.style.backgroundImage = `url("${String(bgUrl).replace(/"/g, '%22')}")`;
+                summaryContent.style.backgroundSize = 'cover';
+                summaryContent.style.backgroundPosition = 'center';
+            } else {
+                summaryContent.style.backgroundImage = '';
+            }
+        }
         eventsEl.innerHTML = '';
-        if (summary.events.positive_description) {
+        const ev = summary.events || {};
+        if (ev.image_url) {
+            const imgWrap = document.createElement('div');
+            imgWrap.className = 'round-summary-event-image-wrap';
+            const img = document.createElement('img');
+            img.src = ev.image_url;
+            img.alt = '';
+            img.className = 'round-summary-event-image';
+            img.onerror = function () { imgWrap.remove(); };
+            imgWrap.appendChild(img);
+            eventsEl.appendChild(imgWrap);
+        }
+        if (ev.event_text) {
+            String(ev.event_text).split(/\n\n+/).forEach((block) => {
+                const trimmed = block.trim();
+                if (!trimmed) return;
+                const p = document.createElement('p');
+                p.textContent = trimmed;
+                eventsEl.appendChild(p);
+            });
+        } else if (ev.positive_description) {
             const p1 = document.createElement('p');
-            p1.textContent = summary.events.positive_description;
+            p1.textContent = ev.positive_description;
             eventsEl.appendChild(p1);
         }
-        if (summary.events.positive2_description) {
+        if (ev.positive2_description) {
             const p2 = document.createElement('p');
-            p2.textContent = summary.events.positive2_description;
+            p2.textContent = ev.positive2_description;
             eventsEl.appendChild(p2);
         }
-        if (summary.events.negative_description) {
+        if (ev.negative_description) {
             const p3 = document.createElement('p');
-            p3.textContent = summary.events.negative_description;
+            p3.textContent = ev.negative_description;
             eventsEl.appendChild(p3);
+        }
+        if (!eventsEl.children.length) {
+            eventsEl.innerHTML = '<p class="round-summary-empty">Событие для этого раунда не задано в админке (вкладка «События ВЕБ»).</p>';
         }
         
         // Ресурсы
@@ -2056,6 +2490,10 @@ function closeRoundSummary() {
     const modal = document.getElementById('round-summary-modal');
     if (modal) {
         modal.style.display = 'none';
+    }
+    const summaryContent = document.querySelector('.round-summary-content');
+    if (summaryContent) {
+        summaryContent.style.backgroundImage = '';
     }
     
     // После закрытия модального окна показываем основной экран

@@ -5218,3 +5218,16 @@ body {
     padding: 8px 4px;
     font-style: italic;
 }
+
+.miniapp-next-round-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+body.miniapp-trading-locked .portfolio-resource-row,
+body.miniapp-trading-locked .portfolio-building-card,
+body.miniapp-trading-locked .market-building-card {
+    opacity: 0.55;
+    pointer-events: none;
+}

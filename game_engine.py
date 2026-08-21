@@ -59,6 +59,8 @@ class Player:
     photo_url: Optional[str] = None  # URL фото профиля (устаревшее, используйте character_image)
     character_name: Optional[str] = None  # Имя выбранного персонажа
     character_image: Optional[str] = None  # Путь к изображению персонажа
+    ready_next_round: bool = False
+    ready_next_round_for: Optional[int] = None
     
     def get_resource(self, resource: str) -> int:
         """Получить количество ресурса"""
@@ -162,6 +164,67 @@ class Game:
         self.building_players_pct_prev_round_start: Dict[str, int] = {}
         self.building_players_pct_current_round_start: Dict[str, int] = {}
         self.player_capitalization_by_round_entry: Dict[int, Dict[str, float]] = {}
+        self.round_trading_locked: bool = False
+    
+    def is_trading_locked_for_player(self, player_id: str) -> bool:
+        if self.round_trading_locked:
+            return True
+        player = self.get_player(player_id)
+        if not player:
+            return False
+        if not player.ready_next_round:
+            return False
+        return player.ready_next_round_for == self.current_round
+    
+    def trading_lock_message_for_player(self, player_id: str) -> str:
+        if self.round_trading_locked:
+            return "Торговля закрыта до следующего раунда"
+        return "Вы подтвердили переход к следующему раунду — торговля недоступна"
+    
+    def count_ready_next_round(self) -> tuple:
+        total = len(self.players)
+        ready = sum(
+            1
+            for p in self.players
+            if p.ready_next_round and p.ready_next_round_for == self.current_round
+        )
+        return ready, total
+    
+    async def mark_player_ready_next_round(self, player_id: str) -> Dict:
+        player = self.get_player(player_id)
+        if not player:
+            return {"success": False, "message": "Игрок не найден"}
+        if self.is_trading_locked_for_player(player_id):
+            return {"success": True, "message": "Уже готов"}
+        player.ready_next_round = True
+        player.ready_next_round_for = self.current_round
+        await database.set_player_ready_next_round(player.id, True, self.current_round)
+        await self.save_player_to_db(player)
+        ready, total = self.count_ready_next_round()
+        return {
+            "success": True,
+            "ready_next_round_count": ready,
+            "ready_next_round_total": total,
+        }
+    
+    async def finish_round_trading_lock(self) -> Dict:
+        self.round_trading_locked = True
+        await database.set_game_round_trading_locked(self.game_id, True)
+        ready, total = self.count_ready_next_round()
+        return {
+            "success": True,
+            "round_trading_locked": True,
+            "ready_next_round_count": ready,
+            "ready_next_round_total": total,
+        }
+    
+    async def clear_round_transition_lock_state(self) -> None:
+        self.round_trading_locked = False
+        await database.set_game_round_trading_locked(self.game_id, False)
+        for player in self.players:
+            player.ready_next_round = False
+            player.ready_next_round_for = None
+        await database.clear_all_players_ready_next_round(self.game_id)
     
     async def initialize(self):
         """Асинхронная инициализация игры (загрузка/сохранение в БД)"""
@@ -242,8 +305,8 @@ class Game:
                 async with conn.transaction():
                     # Сохраняем состояние игры
                     await conn.execute(
-                        "UPDATE games SET current_round = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
-                        self.current_round, self.game_id
+                        "UPDATE games SET current_round = $1, round_trading_locked = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3",
+                        self.current_round, bool(self.round_trading_locked), self.game_id
                     )
                     
                     # Сохраняем текущие цены
@@ -260,18 +323,22 @@ class Game:
                     for player in self.players:
                         await conn.execute("""
                             INSERT INTO players 
-                            (id, game_id, name, character_name, character_image, money)
-                            VALUES ($1, $2, $3, $4, $5, $6)
+                            (id, game_id, name, character_name, character_image, money, ready_next_round, ready_next_round_for)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                             ON CONFLICT (id) DO UPDATE SET
                                 game_id = EXCLUDED.game_id,
                                 name = EXCLUDED.name,
                                 character_name = EXCLUDED.character_name,
                                 character_image = EXCLUDED.character_image,
-                                money = EXCLUDED.money
+                                money = EXCLUDED.money,
+                                ready_next_round = EXCLUDED.ready_next_round,
+                                ready_next_round_for = EXCLUDED.ready_next_round_for
                         """, player.id, self.game_id, player.name,
                             getattr(player, 'character_name', None),
                             getattr(player, 'character_image', None),
-                            player.money)
+                            player.money,
+                            bool(getattr(player, 'ready_next_round', False)),
+                            getattr(player, 'ready_next_round_for', None))
                         
                         # Сохраняем ресурсы игрока
                         await conn.execute("DELETE FROM player_resources WHERE player_id = $1", player.id)
@@ -306,8 +373,8 @@ class Game:
             async with aiosqlite.connect(db_path) as conn:
                 # Сохраняем состояние игры
                 await conn.execute(
-                    "UPDATE games SET current_round = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (self.current_round, self.game_id)
+                    "UPDATE games SET current_round = ?, round_trading_locked = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (self.current_round, 1 if self.round_trading_locked else 0, self.game_id)
                 )
                 
                 # Сохраняем текущие цены
@@ -324,12 +391,14 @@ class Game:
                 for player in self.players:
                     await conn.execute("""
                         INSERT OR REPLACE INTO players 
-                        (id, game_id, name, character_name, character_image, money)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        (id, game_id, name, character_name, character_image, money, ready_next_round, ready_next_round_for)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (player.id, self.game_id, player.name,
                         getattr(player, 'character_name', None),
                         getattr(player, 'character_image', None),
-                        player.money))
+                        player.money,
+                        1 if getattr(player, 'ready_next_round', False) else 0,
+                        getattr(player, 'ready_next_round_for', None)))
                     
                     # Сохраняем ресурсы игрока
                     await conn.execute("DELETE FROM player_resources WHERE player_id = ?", (player.id,))
@@ -430,18 +499,22 @@ class Game:
             async with pool.acquire() as conn:
                 await conn.execute("""
                     INSERT INTO players 
-                    (id, game_id, name, character_name, character_image, money)
-                    VALUES ($1, $2, $3, $4, $5, $6)
+                    (id, game_id, name, character_name, character_image, money, ready_next_round, ready_next_round_for)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     ON CONFLICT (id) DO UPDATE SET
                         game_id = EXCLUDED.game_id,
                         name = EXCLUDED.name,
                         character_name = EXCLUDED.character_name,
                         character_image = EXCLUDED.character_image,
-                        money = EXCLUDED.money
+                        money = EXCLUDED.money,
+                        ready_next_round = EXCLUDED.ready_next_round,
+                        ready_next_round_for = EXCLUDED.ready_next_round_for
                 """, player.id, self.game_id, player.name,
                     getattr(player, 'character_name', None),
                     getattr(player, 'character_image', None),
-                    player.money)
+                    player.money,
+                    bool(getattr(player, 'ready_next_round', False)),
+                    getattr(player, 'ready_next_round_for', None))
                 
                 await conn.execute("DELETE FROM player_resources WHERE player_id = $1", player.id)
                 for resource_name, amount in player.resources.items():
@@ -455,12 +528,14 @@ class Game:
             async with aiosqlite.connect(db_path) as conn:
                 await conn.execute("""
                     INSERT OR REPLACE INTO players 
-                    (id, game_id, name, character_name, character_image, money)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (id, game_id, name, character_name, character_image, money, ready_next_round, ready_next_round_for)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (player.id, self.game_id, player.name,
                     getattr(player, 'character_name', None),
                     getattr(player, 'character_image', None),
-                    player.money))
+                    player.money,
+                    1 if getattr(player, 'ready_next_round', False) else 0,
+                    getattr(player, 'ready_next_round_for', None)))
                 
                 await conn.execute("DELETE FROM player_resources WHERE player_id = ?", (player.id,))
                 for resource_name, amount in player.resources.items():
@@ -614,6 +689,9 @@ class Game:
         if not player:
             return {"success": False, "message": "Игрок не найден"}
         
+        if self.is_trading_locked_for_player(player_id):
+            return {"success": False, "message": self.trading_lock_message_for_player(player_id)}
+        
         # Проверяем, включен ли ресурс в конфигурации
         if resource not in self.enabled_resources:
             return {"success": False, "message": "Ресурс недоступен в этой игре"}
@@ -673,6 +751,9 @@ class Game:
         if not player:
             return {"success": False, "message": "Игрок не найден"}
         
+        if self.is_trading_locked_for_player(player_id):
+            return {"success": False, "message": self.trading_lock_message_for_player(player_id)}
+        
         # Проверяем, включен ли ресурс в конфигурации
         if resource not in self.enabled_resources:
             return {"success": False, "message": "Ресурс недоступен в этой игре"}
@@ -729,6 +810,9 @@ class Game:
         if not player:
             return {"success": False, "message": "Игрок не найден"}
         
+        if self.is_trading_locked_for_player(player_id):
+            return {"success": False, "message": self.trading_lock_message_for_player(player_id)}
+        
         # Проверяем, включен ли объект в конфигурации
         if building_name not in self.enabled_buildings:
             return {"success": False, "message": "Объект недоступен в этой игре"}
@@ -772,6 +856,9 @@ class Game:
         player = self.get_player(player_id)
         if not player:
             return {"success": False, "message": "Игрок не найден"}
+        
+        if self.is_trading_locked_for_player(player_id):
+            return {"success": False, "message": self.trading_lock_message_for_player(player_id)}
         
         building = player.get_building(building_id)
         if not building:
@@ -1243,6 +1330,8 @@ class Game:
         # Переходим к следующему раунду
         self.current_round += 1
         
+        await self.clear_round_transition_lock_state()
+        
         # Сбрасываем отслеживание для следующего раунда
         self.start_round()
         
@@ -1386,6 +1475,7 @@ class Game:
             "game_id": self.game_id,
             "current_round": self.current_round,
             "current_prices": self.current_prices.copy(),
+            "round_trading_locked": bool(self.round_trading_locked),
             "players": []
         }
         
@@ -1396,6 +1486,8 @@ class Game:
                 "money": player.money,
                 "character_name": getattr(player, 'character_name', None),
                 "character_image": getattr(player, 'character_image', None),
+                "ready_next_round": bool(getattr(player, 'ready_next_round', False)),
+                "ready_next_round_for": getattr(player, 'ready_next_round_for', None),
                 "resources": player.resources.copy(),
                 "buildings": []
             }
@@ -1420,6 +1512,7 @@ class Game:
         """Восстановить состояние игры из снимка"""
         self.current_round = snapshot["current_round"]
         self.current_prices = snapshot["current_prices"].copy()
+        self.round_trading_locked = bool(snapshot.get("round_trading_locked", False))
         
         # Восстанавливаем игроков
         self.players = []
@@ -1433,6 +1526,8 @@ class Game:
                 player.character_name = p_data["character_name"]
             if p_data.get("character_image"):
                 player.character_image = p_data["character_image"]
+            player.ready_next_round = bool(p_data.get("ready_next_round", False))
+            player.ready_next_round_for = p_data.get("ready_next_round_for")
             
             player.resources = p_data["resources"].copy()
             

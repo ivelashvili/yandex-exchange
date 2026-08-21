@@ -1,28 +1,28 @@
-/* Noto Sans — основной текст и цифры */
+/* San Francisco — основной текст и цифры */
 @font-face {
-    font-family: 'Noto Sans';
-    src: url('/design/Noto%20Sans/NotoSans-Regular.ttf') format('truetype');
+    font-family: 'San Francisco';
+    src: url('/design/San%20Francisco.ttf') format('truetype');
     font-weight: normal;
     font-style: normal;
     font-display: swap;
 }
 @font-face {
-    font-family: 'Noto Sans';
-    src: url('/design/Noto%20Sans/NotoSans-Bold.ttf') format('truetype');
+    font-family: 'San Francisco';
+    src: url('/design/San%20Francisco.ttf') format('truetype');
     font-weight: bold;
     font-style: normal;
     font-display: swap;
 }
 @font-face {
-    font-family: 'Noto Sans';
-    src: url('/design/Noto%20Sans/NotoSans-Italic.ttf') format('truetype');
+    font-family: 'San Francisco';
+    src: url('/design/San%20Francisco.ttf') format('truetype');
     font-weight: normal;
     font-style: italic;
     font-display: swap;
 }
 @font-face {
-    font-family: 'Noto Sans';
-    src: url('/design/Noto%20Sans/NotoSans-BoldItalic.ttf') format('truetype');
+    font-family: 'San Francisco';
+    src: url('/design/San%20Francisco.ttf') format('truetype');
     font-weight: bold;
     font-style: italic;
     font-display: swap;
@@ -53,7 +53,7 @@
 }
 
 body {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 1.125em; /* Уменьшено на 10% от 1.25em */
     background-image: url('/static/images/background.jpeg');
     background-size: cover;
@@ -145,10 +145,44 @@ header {
 }
 
 .round-info strong {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-weight: normal;
     color: #d4af37;
     font-size: 1.35em;
+}
+
+.header-finish-round-wrap {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px;
+}
+
+.round-ready-indicator {
+    font-family: 'Anticva', serif;
+    color: #d4af37;
+    font-size: 0.95em;
+    font-weight: bold;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+    min-height: 1.2em;
+    display: inline-flex;
+    align-items: center;
+    padding: 10px 16px;
+    background: rgba(40, 28, 18, 0.65);
+    border: 1px solid rgba(139, 69, 19, 0.65);
+    border-radius: 8px;
+    line-height: 1;
+    letter-spacing: 0.02em;
+}
+
+.header-finish-round-wrap .header-control-btn {
+    border-color: #8b4513;
+}
+
+.header-finish-round-wrap .header-control-btn:hover {
+    border-color: #a0522d;
 }
 
 main {
@@ -306,12 +340,21 @@ th {
 }
 
 td {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     padding: 10px 12px;
     border-bottom: 1px solid rgba(139, 69, 19, 0.3);
     text-align: center;
     color: #3a2a1a; /* Темный цвет по умолчанию */
     font-weight: 700; /* Все цифры жирные */
+}
+
+.prices-table-part tbody tr {
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.prices-table-part tbody tr:hover {
+    background: rgba(212, 175, 55, 0.2);
 }
 
 #prices-table tbody tr {
@@ -393,7 +436,7 @@ tbody tr:hover {
     border: 2px solid #6b4423;
     border-radius: 10px;
     padding: 0;
-    transition: transform 0.2s, box-shadow 0.2s;
+    transition: box-shadow 0.2s, border-color 0.2s;
     display: flex;
     flex-direction: row;
     align-items: stretch;
@@ -402,7 +445,7 @@ tbody tr:hover {
 }
 
 .building-card:hover {
-    transform: translateY(-2px);
+    border-color: #d4af37;
     box-shadow: 0 6px 20px rgba(107, 68, 35, 0.35);
 }
 
@@ -451,7 +494,7 @@ tbody tr:hover {
 }
 
 .building-count {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 1.8em;
     color: #d4af37;
     font-weight: 700;
@@ -479,7 +522,7 @@ tbody tr:hover {
 }
 
 .building-percentage {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 1.44em;
     color: #3a2a1a;
     font-weight: 400;
@@ -705,9 +748,19 @@ tbody tr:hover {
     box-shadow: 0 6px 20px rgba(107, 68, 35, 0.35);
 }
 
+#resource-modal .modal-content {
+    max-width: 960px;
+    background: #e8dcc8;
+}
+
 #building-modal .modal-content {
-    max-width: 990px;
-    width: 78.375%;
+    max-width: 960px;
+    width: 71.25%;
+    background: #e8dcc8;
+}
+
+#building-modal .modal-building-col-left {
+    flex: 0 0 55%;
 }
 
 /* Навигация снаружи карточки, поверх затемнения */
@@ -765,9 +818,8 @@ tbody tr:hover {
     align-self: stretch;
 }
 
-/* Модалка объекта: колонка с картинкой (45% × 1.15 × 1.10 ≈ 56.93%) */
-#building-modal .modal-building-col-left {
-    flex: 0 0 56.925%;
+#resource-modal .modal-resource-col-left {
+    flex: 0 0 55%;
 }
 
 .modal-resource-col-right {
@@ -789,108 +841,367 @@ tbody tr:hover {
     align-items: stretch;
     padding: 52px 16px 16px 12px;
     justify-content: flex-start;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+#building-modal .modal-building-col-right {
+    background: #e8dcc8;
+    padding: 14px 18px 16px 16px;
+    text-align: center;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+#building-modal .modal-building-round-income {
+    margin-top: 12px;
+    margin-bottom: 10px;
+    padding: 12px 14px;
+    background: rgba(255, 252, 245, 0.75);
+    border: 1px solid rgba(107, 68, 35, 0.45);
+    border-radius: 6px;
+    text-align: center;
+}
+
+#building-modal .modal-building-round-income-label {
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 0.95em;
+    font-weight: 600;
+    color: #4a3520;
+    margin-bottom: 6px;
+}
+
+#building-modal .modal-building-round-income-value {
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 1.35em;
+    font-weight: 700;
+    color: #3a2a1a;
+    line-height: 1.3;
+}
+
+#building-modal .modal-building-info-block {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    background: #f4c9a0;
+    border-radius: 6px;
+    border: 1px solid rgba(139, 90, 43, 0.35);
+}
+
+#building-modal .modal-building-info-icon {
+    flex: 0 0 48px;
+    width: 48px;
+    height: 48px;
+    object-fit: contain;
+    background: none;
+}
+
+#building-modal .modal-building-info-text {
+    flex: 1;
+    margin: 0;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 0.95em;
+    line-height: 1.35;
+    color: #3a2a1a;
+    font-weight: 500;
+    text-align: left;
+}
+
+#building-modal .modal-stat-label,
+#building-modal .modal-stat-value,
+#building-modal .modal-building-cost,
+#building-modal .modal-building-income,
+#building-modal .modal-building-cost-list,
+#building-modal .modal-building-income-value {
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+#resource-modal .modal-resource-visual {
+    position: relative;
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 320px;
+    height: 100%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+#resource-modal .modal-resource-bg {
+    position: absolute;
+    inset: -8%;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    filter: blur(7px);
+    transform: scale(1.05);
+    z-index: 0;
+}
+
+#resource-modal .modal-resource-hero-wrap {
+    position: relative;
+    z-index: 1;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    padding: 24px 16px 56px;
+    box-sizing: border-box;
+}
+
+#resource-modal .modal-resource-hero-image {
+    max-width: 88%;
+    max-height: 72%;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    display: block;
+    transform: scale(1.2);
+    filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.35));
+}
+
+#resource-modal .modal-resource-name-overlay {
+    position: absolute;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    z-index: 2;
+    width: calc(100% - 32px);
+    max-width: 320px;
+    text-align: center;
+    pointer-events: none;
 }
 
 #resource-modal .modal-resource-name {
     font-family: 'Anticva', serif;
-    font-size: 2.6em;
+    font-size: 2em;
     font-weight: bold;
-    color: #3a2a1a;
-    margin-bottom: 12px;
-    text-align: left;
-    text-transform: uppercase;
-    line-height: 1.2;
-    text-shadow: none;
-}
-
-/* Название по центру картинки, цвет как рамка карточки */
-#building-modal .modal-building-name {
-    position: absolute;
-    top: 8px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: calc(100% - 24px);
+    color: #d4af37;
     margin: 0;
-    padding: 0 8px;
-    box-sizing: border-box;
-    font-family: 'Anticva', serif;
-    font-size: 2.3em;
-    font-weight: bold;
-    color: #5c3d26;
+    padding: 8px 20px;
     text-align: center;
     text-transform: uppercase;
-    line-height: 1.15;
-    z-index: 2;
-    pointer-events: none;
-    text-shadow:
-        0 0 8px rgba(255, 248, 235, 0.95),
-        0 0 4px rgba(255, 248, 235, 0.9),
-        0 1px 2px rgba(255, 255, 255, 0.85);
+    line-height: 1.2;
+    letter-spacing: 0.04em;
+    background: rgba(30, 20, 12, 0.55);
+    border-radius: 4px;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+#resource-modal .modal-resource-col-right {
+    background: #e8dcc8;
+    padding: 14px 18px 16px 16px;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+#resource-modal .modal-resource-info-block {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    margin-top: 12px;
+    margin-bottom: 10px;
+    background: #f4c9a0;
+    border-radius: 6px;
+    border: 1px solid rgba(139, 90, 43, 0.35);
+}
+
+#resource-modal .modal-resource-info-icon {
+    flex: 0 0 48px;
+    width: 48px;
+    height: 48px;
+    object-fit: contain;
     background: none;
 }
 
-#resource-modal .modal-resource-image-container {
-    flex: 1 1 auto;
-    width: 100%;
-    min-height: 140px;
-    height: 100%;
+#resource-modal .modal-resource-info-text {
+    flex: 1;
     margin: 0;
-    display: flex;
-    align-items: stretch;
-    justify-content: stretch;
-    background: rgba(160, 130, 90, 0.25);
-    border: none;
-    border-radius: 0 10px 10px 0;
-    overflow: hidden;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 0.95em;
+    line-height: 1.35;
+    color: #3a2a1a;
+    font-weight: 500;
 }
 
-#building-modal .modal-building-image-container {
+#resource-modal .modal-resource-price-block {
+    margin-bottom: 10px;
+}
+
+#resource-modal .modal-resource-price-value {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.35em;
+    line-height: 1.15;
+    margin-bottom: 8px;
+}
+
+#resource-modal .modal-resource-price-amount {
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 4.8em;
+    font-weight: bold;
+    color: #3a2a1a;
+}
+
+#resource-modal .modal-resource-price-currency {
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 2.4em;
+    font-weight: 600;
+    color: #3a2a1a;
+}
+
+#resource-modal .modal-resource-change-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+#resource-modal .modal-change-pill {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 0.95em;
+    font-weight: 600;
+    line-height: 1.3;
+}
+
+#resource-modal .modal-change-pill-round.positive,
+#resource-modal .modal-change-pill-round.neutral {
+    background: #c8e6c9;
+    color: #3a2a1a;
+}
+
+#resource-modal .modal-change-pill-round.negative {
+    background: #ffcdd2;
+    color: #3a2a1a;
+}
+
+#resource-modal .modal-change-pill-start.positive {
+    background: #c8e6c9;
+    color: #3a2a1a;
+}
+
+#resource-modal .modal-change-pill-start.negative,
+#resource-modal .modal-change-pill-start.neutral {
+    background: #f8bbd0;
+    color: #3a2a1a;
+}
+
+#building-modal .modal-building-visual {
     position: relative;
     flex: 1 1 auto;
     width: 100%;
-    min-height: 140px;
+    min-height: 320px;
     height: 100%;
-    margin: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+#building-modal .modal-building-bg {
+    position: absolute;
+    inset: -8%;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    filter: blur(7px) brightness(0.72);
+    transform: scale(1.05);
+    z-index: 0;
+}
+
+#building-modal .modal-building-bg::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(12, 8, 5, 0.42);
+    pointer-events: none;
+}
+
+#building-modal .modal-building-hero-wrap {
+    position: relative;
+    z-index: 1;
+    flex: 1;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(160, 130, 90, 0.25);
-    border: none;
-    border-radius: 0 10px 10px 0;
-    overflow: hidden;
-}
-
-#resource-modal .modal-resource-image {
     width: 100%;
-    height: 100%;
-    min-height: 140px;
-    object-fit: cover;
-    display: block;
+    padding: 24px 16px 56px;
+    box-sizing: border-box;
 }
 
-#building-modal .modal-building-image {
-    display: block;
-    max-width: 100%;
-    max-height: 100%;
+#building-modal .modal-building-hero-image {
+    max-width: 88%;
+    max-height: 72%;
     width: auto;
     height: auto;
     object-fit: contain;
-    object-position: center;
+    display: block;
+    transform: scale(1.2);
+    filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.35));
 }
 
-#resource-modal .modal-resource-stats,
+#building-modal .modal-building-name-overlay {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    transform: translateX(-50%);
+    z-index: 2;
+    width: calc(100% - 20px);
+    max-width: 100%;
+    box-sizing: border-box;
+    text-align: center;
+    pointer-events: none;
+    container-type: inline-size;
+}
+
+#building-modal .modal-building-name {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    font-family: 'Anticva', serif;
+    font-size: clamp(0.9rem, 7cqi, 1.75em);
+    font-weight: bold;
+    color: #d4af37;
+    margin: 0;
+    padding: 10px 14px;
+    text-align: center;
+    text-transform: uppercase;
+    line-height: 1.15;
+    letter-spacing: 0.02em;
+    background: rgba(30, 20, 12, 0.55);
+    border-radius: 4px;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+    hyphens: auto;
+}
+
 #building-modal .modal-building-stats {
     display: flex;
     flex-direction: column;
     gap: 15px;
     width: 100%;
     margin-bottom: 8px;
+    text-align: center;
 }
 
 #resource-modal .modal-chart-title {
-    margin-top: 8px;
+    margin-top: 4px;
+    margin-bottom: 8px;
     text-align: left;
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 1.1em;
+    border-bottom: none;
+    padding-bottom: 0;
+    color: #4a3520;
 }
 
 #resource-modal .modal-stat-item,
@@ -916,34 +1227,27 @@ tbody tr:hover {
     font-size: 1.35em;
 }
 
-#building-modal .modal-building-cost {
-    margin-top: 12px;
+#building-modal .modal-building-cost,
+#building-modal .modal-building-income,
+#building-modal .modal-building-round-income-label,
+#building-modal .modal-building-round-income-value,
+#building-modal .modal-building-cost .modal-stat-label,
+#building-modal .modal-building-cost-list,
+#building-modal .modal-building-cost-list li,
+#building-modal .modal-building-income .modal-stat-label,
+#building-modal .modal-building-income-value,
+#building-modal .modal-stat-label,
+#building-modal .modal-stat-value {
     text-align: center;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
-#building-modal .modal-building-income {
-    margin-top: 12px;
-    text-align: center;
+#building-modal .modal-building-info-block {
+    text-align: left;
 }
 
-#building-modal .modal-building-cost .modal-stat-label {
-    text-align: center;
-}
-
-#building-modal .modal-building-cost-list {
-    text-align: center;
-}
-
-#building-modal .modal-building-cost-list li {
-    text-align: center;
-}
-
-#building-modal .modal-building-income .modal-stat-label {
-    text-align: center;
-}
-
-#building-modal .modal-building-income-value {
-    text-align: center;
+#building-modal .modal-building-info-text {
+    text-align: left;
 }
 
 @media (max-width: 700px) {
@@ -958,18 +1262,15 @@ tbody tr:hover {
         width: 100%;
         align-self: stretch;
     }
-    #resource-modal .modal-resource-image-container {
+    #resource-modal .modal-resource-visual {
         min-height: min(52vw, 280px);
         height: min(52vw, 280px);
         flex: 0 0 auto;
     }
-    #building-modal .modal-building-image-container {
+    #building-modal .modal-building-visual {
         min-height: min(52vw, 280px);
         height: min(52vw, 280px);
         flex: 0 0 auto;
-    }
-    #resource-modal .modal-resource-image {
-        min-height: min(52vw, 280px);
     }
 }
 
@@ -991,6 +1292,13 @@ tbody tr:hover {
     border-radius: 5px;
     border: 1px solid #8b4513;
     padding: 10px;
+}
+
+#resource-modal .modal-chart-container {
+    flex: 1;
+    min-height: 200px;
+    background: rgba(255, 252, 245, 0.65);
+    border: 1px solid rgba(107, 68, 35, 0.45);
 }
 
 #resource-price-chart {
@@ -1022,7 +1330,7 @@ tbody tr:hover {
 }
 
 .modal-stat-value {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 1.5em;
     color: #3a2a1a;
     font-weight: 700; /* Жирный */
@@ -1094,11 +1402,11 @@ tbody tr:hover {
 
 .building-card {
     cursor: pointer;
-    transition: transform 0.2s, box-shadow 0.2s;
+    transition: box-shadow 0.2s, border-color 0.2s;
 }
 
 .building-card:hover {
-    transform: translateY(-3px);
+    border-color: #d4af37;
     box-shadow: 0 6px 20px rgba(212, 175, 55, 0.3);
 }
 
@@ -1280,7 +1588,7 @@ tbody tr:hover {
     border-radius: 10px;
     cursor: pointer;
     transition: all 0.3s;
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
     position: relative;
     z-index: 2; /* Выше псевдоэлементов */
@@ -1366,7 +1674,7 @@ tbody tr:hover {
     border-radius: 10px;
     cursor: pointer;
     transition: all 0.3s;
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
     position: relative;
     z-index: 1; /* Контент поверх затемнения */
@@ -1551,7 +1859,7 @@ tbody tr:hover {
     cursor: pointer;
     transition: all 0.3s;
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 .rules-close-btn:hover {
@@ -1567,9 +1875,21 @@ tbody tr:hover {
     right: 20px;
     z-index: 10;
     display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 10px;
+}
+
+.round-control-row {
+    display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: 10px;
     flex-wrap: wrap;
+}
+
+.round-control-row--music {
+    width: 100%;
 }
 
 .header-control-btn {
@@ -1631,6 +1951,105 @@ tbody tr:hover {
 }
 .header-menu-item:not(:last-child) {
     border-bottom: 1px solid rgba(139, 69, 19, 0.5);
+}
+
+/* Фоновая музыка (ведущий) */
+.header-music-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.header-music-btn {
+    min-width: 52px;
+    padding: 15px 16px;
+    font-size: 1.1em;
+    line-height: 1;
+}
+
+.header-music-btn.music-on {
+    border-color: #9acd32;
+    box-shadow: 0 0 12px rgba(154, 205, 50, 0.35), 0 4px 16px rgba(0, 0, 0, 0.5);
+    color: #f0fff0;
+}
+
+.header-music-btn.music-off {
+    opacity: 0.72;
+    filter: saturate(0.65);
+}
+
+.header-music-volume {
+    width: 100px;
+    height: 6px;
+    cursor: pointer;
+    accent-color: #d4af37;
+}
+
+/* Подтверждение «Завершить раунд» */
+.finish-round-modal {
+    display: none;
+    position: fixed;
+    z-index: 2105;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    box-sizing: border-box;
+    background-color: rgba(0, 0, 0, 0.8);
+    backdrop-filter: blur(6px);
+}
+
+.finish-round-modal-dialog {
+    position: relative;
+    width: 100%;
+    max-width: 460px;
+    background: linear-gradient(135deg, rgba(222, 184, 135, 0.98) 0%, rgba(205, 180, 150, 0.98) 100%);
+    border: 3px solid #8b4513;
+    border-radius: 14px;
+    padding: 28px 32px 32px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.85);
+}
+
+.finish-round-modal-title {
+    font-family: 'Stieglitz', serif;
+    font-size: 1.75rem;
+    color: #3a2a1a;
+    margin: 0 0 22px 0;
+    text-align: center;
+}
+
+.finish-round-modal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+}
+
+.finish-round-modal-btn {
+    font-family: 'Anticva', serif;
+    font-weight: bold;
+    padding: 14px 24px;
+    font-size: 0.95em;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    border: 2px solid;
+    min-width: 140px;
+}
+
+.finish-round-modal-btn--cancel {
+    background: rgba(90, 70, 50, 0.35);
+    border-color: #6b5344;
+    color: #3a2a1a;
+}
+
+.finish-round-modal-btn--confirm {
+    background: linear-gradient(135deg, rgba(139, 69, 19, 0.95) 0%, rgba(101, 67, 33, 0.95) 100%);
+    border-color: #d4af37;
+    color: #d4af37;
 }
 
 /* Финальный экран */
@@ -1752,7 +2171,7 @@ tbody tr:hover {
 }
 
 .final-winner-card .final-card-capitalization {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 2em;
     color: #3a2a1a;
     font-weight: bold;
@@ -1760,7 +2179,7 @@ tbody tr:hover {
 }
 
 .final-winner-card .final-card-growth {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 1.5em;
     font-weight: bold;
 }
@@ -1799,7 +2218,7 @@ tbody tr:hover {
 }
 
 .final-podium-card .final-card-capitalization {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 1.5em;
     color: #3a2a1a;
     font-weight: bold;
@@ -1807,7 +2226,7 @@ tbody tr:hover {
 }
 
 .final-podium-card .final-card-growth {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 1.2em;
     font-weight: bold;
 }
@@ -1846,7 +2265,7 @@ tbody tr:hover {
 }
 
 .final-top-card .final-card-capitalization {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 1.1em;
     color: #3a2a1a;
     font-weight: bold;
@@ -1854,7 +2273,7 @@ tbody tr:hover {
 }
 
 .final-top-card .final-card-growth {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 0.9em;
     font-weight: bold;
 }
@@ -1902,7 +2321,7 @@ tbody tr:hover {
 }
 
 .final-rest-capitalization {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 1.1em;
     color: #3a2a1a;
     font-weight: bold;
@@ -1910,7 +2329,7 @@ tbody tr:hover {
 }
 
 .final-rest-growth {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 1em;
     font-weight: bold;
     text-align: right;
@@ -2077,6 +2496,23 @@ tbody tr:hover {
 
 .round-video-button:active {
     transform: translateY(0);
+}
+
+.round-summary-event-image-wrap {
+    text-align: center;
+    margin-bottom: 16px;
+}
+
+.round-summary-event-image {
+    max-width: 100%;
+    max-height: 280px;
+    border-radius: 8px;
+    border: 2px solid #8b6f47;
+}
+
+.round-summary-empty {
+    font-style: italic;
+    color: #5a4a3a;
 }
 
 .round-summary-continue {
@@ -2478,7 +2914,7 @@ tbody tr:hover {
     /* было 8px по вертикали; −15% высоты за счёт отступов, размер шрифта не трогаем */
     padding: calc(8px * 0.85) 18px;
     border-radius: 999px;
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 1.1em;
     font-weight: 800;
 }
@@ -2507,7 +2943,7 @@ tbody tr:hover {
 
 /* Как .capitalization-value в miniapp.css — только цифры */
 .player-modal-money-value {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 3.125em;
     font-weight: normal;
     color: #d4af37;
@@ -2515,7 +2951,7 @@ tbody tr:hover {
 }
 
 .player-modal-money-suffix {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 1.35em;
     font-weight: normal;
     color: #d4af37;
@@ -2523,11 +2959,23 @@ tbody tr:hover {
 }
 
 .player-modal-owns-title {
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 0.88em;
     font-weight: 700;
     color: #2a2118;
     margin-bottom: 10px;
+}
+
+.player-modal-resources-section-title {
+    margin-top: 14px;
+}
+
+.player-modal-resource-amount {
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 0.95em;
+    font-weight: 800;
+    color: #2a2118;
+    flex-shrink: 0;
 }
 
 .player-modal-buildings-list {
@@ -2542,7 +2990,7 @@ tbody tr:hover {
     gap: 12px;
     padding: 8px 0;
     border-bottom: 1px solid rgba(80, 55, 40, 0.25);
-    font-family: 'Noto Sans', sans-serif;
+    font-family: 'San Francisco', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 1.1em;
     font-weight: 700;
     color: #2a2118;

@@ -511,49 +511,6 @@ class EventSystem:
         self.positive_events_dict = {e["name"]: e for e in POSITIVE_EVENTS}
         self.negative_events_dict = {e["name"]: e for e in NEGATIVE_EVENTS}
     
-    def get_fixed_event_pair(self, round_number: int) -> tuple:
-        """
-        Получить фиксированную пару событий для раунда
-        
-        Args:
-            round_number: Номер раунда (1-10)
-            
-        Returns:
-            (positive_event, negative_event) или (None, None) для раунда 1
-        """
-        try:
-            from fixed_scenario_analysis import FIXED_EVENT_SEQUENCE
-            
-            if round_number < 1 or round_number > len(FIXED_EVENT_SEQUENCE):
-                # Fallback на случайную пару
-                return self.get_random_event_pair()
-            
-            event_pair = FIXED_EVENT_SEQUENCE[round_number - 1]
-            
-            if event_pair is None:
-                # Для раунда 1 нет событий
-                return None, None
-            
-            if isinstance(event_pair, tuple) and len(event_pair) == 2:
-                pos_name, neg_name = event_pair
-                
-                # Если оба события позитивные (как в раунде 3)
-                if neg_name in self.positive_events_dict:
-                    pos1 = self.positive_events_dict.get(pos_name)
-                    pos2 = self.positive_events_dict.get(neg_name)
-                    return pos1, pos2
-                
-                # Обычный случай: позитивное + негативное
-                positive_event = self.positive_events_dict.get(pos_name)
-                negative_event = self.negative_events_dict.get(neg_name) if neg_name else None
-                
-                return positive_event, negative_event
-        except Exception as e:
-            print(f"Ошибка при получении фиксированной пары событий: {e}")
-        
-        # Fallback на случайную пару
-        return self.get_random_event_pair()
-    
     def get_random_event_pair(self) -> tuple:
         """
         Возвращает случайную пару событий (позитивное + негативное)

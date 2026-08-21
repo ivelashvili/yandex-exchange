@@ -83,6 +83,134 @@ def _convert_row_to_dict(row) -> Dict:
     else:
         return dict(row)
 
+# ========== МИГРАЦИИ: переход между раундами ==========
+
+async def _pg_ensure_round_transition_columns(conn) -> None:
+    await conn.execute(
+        "ALTER TABLE games ADD COLUMN IF NOT EXISTS round_trading_locked BOOLEAN NOT NULL DEFAULT FALSE"
+    )
+    await conn.execute(
+        "ALTER TABLE players ADD COLUMN IF NOT EXISTS ready_next_round BOOLEAN NOT NULL DEFAULT FALSE"
+    )
+    await conn.execute(
+        "ALTER TABLE players ADD COLUMN IF NOT EXISTS ready_next_round_for INTEGER"
+    )
+
+
+async def _sqlite_ensure_round_transition_columns(conn) -> None:
+    for table, col, col_type in (
+        ("games", "round_trading_locked", "INTEGER NOT NULL DEFAULT 0"),
+        ("players", "ready_next_round", "INTEGER NOT NULL DEFAULT 0"),
+        ("players", "ready_next_round_for", "INTEGER"),
+    ):
+        cursor = await conn.execute(f"PRAGMA table_info({table})")
+        existing = [row[1] for row in await cursor.fetchall()]
+        if col not in existing:
+            await conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+
+
+async def _pg_ensure_round_settings_text_columns(conn) -> None:
+    await conn.execute(
+        "ALTER TABLE round_settings ADD COLUMN IF NOT EXISTS resource_texts JSONB"
+    )
+    await conn.execute(
+        "ALTER TABLE round_settings ADD COLUMN IF NOT EXISTS building_texts JSONB"
+    )
+
+
+async def _sqlite_ensure_round_settings_text_columns(conn) -> None:
+    cursor = await conn.execute("PRAGMA table_info(round_settings)")
+    existing = [row[1] for row in await cursor.fetchall()]
+    for col in ("resource_texts", "building_texts"):
+        if col not in existing:
+            await conn.execute(f"ALTER TABLE round_settings ADD COLUMN {col} TEXT")
+
+
+async def ensure_round_settings_text_columns() -> None:
+    """Миграция: комментарии к коэффициентам в round_settings."""
+    if is_postgresql():
+        pool = await init_pool()
+        async with pool.acquire() as conn:
+            await _pg_ensure_round_settings_text_columns(conn)
+    elif is_sqlite():
+        db_path = get_sqlite_path()
+        async with aiosqlite.connect(db_path) as conn:
+            await _sqlite_ensure_round_settings_text_columns(conn)
+            await conn.commit()
+
+
+async def set_game_round_trading_locked(game_id: int, locked: bool) -> None:
+    flag = bool(locked)
+    if is_postgresql():
+        pool = await init_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE games SET round_trading_locked = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+                flag,
+                game_id,
+            )
+    else:
+        db_path = get_sqlite_path()
+        async with aiosqlite.connect(db_path) as conn:
+            await conn.execute(
+                "UPDATE games SET round_trading_locked = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (1 if flag else 0, game_id),
+            )
+            await conn.commit()
+
+
+async def set_player_ready_next_round(
+    player_id: str, ready: bool, for_round: Optional[int] = None
+) -> None:
+    if is_postgresql():
+        pool = await init_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE players SET ready_next_round = $1, ready_next_round_for = $2
+                WHERE id = $3
+                """,
+                bool(ready),
+                for_round,
+                player_id,
+            )
+    else:
+        db_path = get_sqlite_path()
+        async with aiosqlite.connect(db_path) as conn:
+            await conn.execute(
+                """
+                UPDATE players SET ready_next_round = ?, ready_next_round_for = ?
+                WHERE id = ?
+                """,
+                (1 if ready else 0, for_round, player_id),
+            )
+            await conn.commit()
+
+
+async def clear_all_players_ready_next_round(game_id: int) -> None:
+    if is_postgresql():
+        pool = await init_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE players SET ready_next_round = FALSE, ready_next_round_for = NULL
+                WHERE game_id = $1
+                """,
+                game_id,
+            )
+    else:
+        db_path = get_sqlite_path()
+        async with aiosqlite.connect(db_path) as conn:
+            await conn.execute(
+                """
+                UPDATE players SET ready_next_round = 0, ready_next_round_for = NULL
+                WHERE game_id = ?
+                """,
+                (game_id,),
+            )
+            await conn.commit()
+
+
 # ========== POSTGRESQL ФУНКЦИИ ==========
 
 async def _pg_init_database():
@@ -297,6 +425,29 @@ async def _pg_init_database():
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_round_content_game_round ON round_content(game_id, round_number)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_round_settings_game_round ON round_settings(game_id, round_number)")
 
+        # События ВЕБ (проектор): текст, картинки, подсветка ресурсов/объектов
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS round_web_events (
+                id SERIAL PRIMARY KEY,
+                game_id INTEGER NOT NULL,
+                round_number INTEGER NOT NULL,
+                event_text TEXT,
+                image_url TEXT,
+                bg_image_url TEXT,
+                highlight_resources JSONB DEFAULT '[]',
+                highlight_buildings JSONB DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+                UNIQUE(game_id, round_number)
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_round_web_events_game_round ON round_web_events(game_id, round_number)"
+        )
+
+        await _pg_ensure_round_transition_columns(conn)
+
 # ========== SQLITE ФУНКЦИИ (ASYNC) ==========
 
 async def _sqlite_init_database():
@@ -498,6 +649,26 @@ async def _sqlite_init_database():
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_round_content_game_round ON round_content(game_id, round_number)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_round_settings_game_round ON round_settings(game_id, round_number)")
 
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS round_web_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                game_id INTEGER NOT NULL,
+                round_number INTEGER NOT NULL,
+                event_text TEXT,
+                image_url TEXT,
+                bg_image_url TEXT,
+                highlight_resources TEXT DEFAULT '[]',
+                highlight_buildings TEXT DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+                UNIQUE(game_id, round_number)
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_round_web_events_game_round ON round_web_events(game_id, round_number)"
+        )
+
         # Таблица персонажей игры (настраиваются в админке, показываются в мини-аппе)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS game_characters (
@@ -514,6 +685,8 @@ async def _sqlite_init_database():
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_game_characters_game_id ON game_characters(game_id)")
 
+        await _sqlite_ensure_round_transition_columns(conn)
+
         await conn.commit()
 
 # ========== ОБЩИЕ ФУНКЦИИ ==========
@@ -526,6 +699,7 @@ async def init_database():
         await _sqlite_init_database()
     else:
         raise ValueError(f"Unsupported database type: {DATABASE_URL}")
+    await ensure_round_settings_text_columns()
 
 async def create_game(num_players: int, company_name: Optional[str] = None) -> int:
     """Создать новую игру в БД (с автоматической генерацией кода)"""
@@ -1349,25 +1523,227 @@ async def list_round_events_admin(game_id: int, round_number: Optional[int] = No
                 for row in rows
             ]
 
-async def save_round_settings(game_id: int, round_number: int, resource_modifiers: Dict, building_modifiers: Dict):
-    """Сохранить настройки раунда (коэффициенты)"""
+def _parse_json_list(value) -> List:
     import json
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except (json.JSONDecodeError, TypeError):
+            return []
+    return []
+
+
+async def save_round_web_event(
+    game_id: int,
+    round_number: int,
+    event_text: Optional[str] = None,
+    image_url: Optional[str] = None,
+    bg_image_url: Optional[str] = None,
+    highlight_resources: Optional[List[str]] = None,
+    highlight_buildings: Optional[List[str]] = None,
+):
+    """Сохранить событие ВЕБ для раунда (проектор)."""
+    import json
+
+    t = (event_text or "").strip()
+    img = (image_url or "").strip()
+    bg = (bg_image_url or "").strip()
+    resources = highlight_resources if highlight_resources is not None else []
+    buildings = highlight_buildings if highlight_buildings is not None else []
+    resources_json = json.dumps(resources, ensure_ascii=False)
+    buildings_json = json.dumps(buildings, ensure_ascii=False)
+
+    text_val = t if t else None
+    img_val = img if img else None
+    bg_val = bg if bg else None
+
+    if is_postgresql():
+        pool = await init_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO round_web_events (
+                    game_id, round_number, event_text, image_url, bg_image_url,
+                    highlight_resources, highlight_buildings, updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, NOW())
+                ON CONFLICT (game_id, round_number)
+                DO UPDATE SET
+                    event_text = EXCLUDED.event_text,
+                    image_url = EXCLUDED.image_url,
+                    bg_image_url = EXCLUDED.bg_image_url,
+                    highlight_resources = EXCLUDED.highlight_resources,
+                    highlight_buildings = EXCLUDED.highlight_buildings,
+                    updated_at = NOW()
+                """,
+                game_id,
+                round_number,
+                text_val,
+                img_val,
+                bg_val,
+                resources_json,
+                buildings_json,
+            )
+    else:
+        db_path = get_sqlite_path()
+        async with aiosqlite.connect(db_path) as conn:
+            await conn.execute(
+                """
+                INSERT INTO round_web_events (
+                    game_id, round_number, event_text, image_url, bg_image_url,
+                    highlight_resources, highlight_buildings, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(game_id, round_number) DO UPDATE SET
+                    event_text = excluded.event_text,
+                    image_url = excluded.image_url,
+                    bg_image_url = excluded.bg_image_url,
+                    highlight_resources = excluded.highlight_resources,
+                    highlight_buildings = excluded.highlight_buildings,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    game_id,
+                    round_number,
+                    text_val,
+                    img_val,
+                    bg_val,
+                    resources_json,
+                    buildings_json,
+                ),
+            )
+            await conn.commit()
+
+
+async def list_round_web_events_admin(
+    game_id: int, round_number: Optional[int] = None
+) -> List[Dict]:
+    """Список событий ВЕБ для админки."""
+    import json
+
+    def row_to_dict(row) -> Dict:
+        return {
+            "round_number": row["round_number"],
+            "event_text": row["event_text"] or "",
+            "image_url": row["image_url"] or "",
+            "bg_image_url": row["bg_image_url"] or "",
+            "highlight_resources": _parse_json_list(row["highlight_resources"]),
+            "highlight_buildings": _parse_json_list(row["highlight_buildings"]),
+        }
+
+    if is_postgresql():
+        pool = await init_pool()
+        async with pool.acquire() as conn:
+            if round_number is not None:
+                rows = await conn.fetch(
+                    """
+                    SELECT round_number, event_text, image_url, bg_image_url,
+                           highlight_resources, highlight_buildings
+                    FROM round_web_events
+                    WHERE game_id = $1 AND round_number = $2
+                    ORDER BY round_number
+                    """,
+                    game_id,
+                    round_number,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT round_number, event_text, image_url, bg_image_url,
+                           highlight_resources, highlight_buildings
+                    FROM round_web_events
+                    WHERE game_id = $1
+                    ORDER BY round_number
+                    """,
+                    game_id,
+                )
+            return [row_to_dict(row) for row in rows]
+    else:
+        db_path = get_sqlite_path()
+        async with aiosqlite.connect(db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            if round_number is not None:
+                cursor = await conn.execute(
+                    """
+                    SELECT round_number, event_text, image_url, bg_image_url,
+                           highlight_resources, highlight_buildings
+                    FROM round_web_events
+                    WHERE game_id = ? AND round_number = ?
+                    ORDER BY round_number
+                    """,
+                    (game_id, round_number),
+                )
+            else:
+                cursor = await conn.execute(
+                    """
+                    SELECT round_number, event_text, image_url, bg_image_url,
+                           highlight_resources, highlight_buildings
+                    FROM round_web_events
+                    WHERE game_id = ?
+                    ORDER BY round_number
+                    """,
+                    (game_id,),
+                )
+            rows = await cursor.fetchall()
+            return [row_to_dict(row) for row in rows]
+
+
+async def get_round_web_event(game_id: int, round_number: int) -> Optional[Dict]:
+    """Одно событие ВЕБ для раунда."""
+    rows = await list_round_web_events_admin(game_id, round_number)
+    return rows[0] if rows else None
+
+
+async def save_round_settings(
+    game_id: int,
+    round_number: int,
+    resource_modifiers: Dict,
+    building_modifiers: Dict,
+    resource_texts: Optional[Dict] = None,
+    building_texts: Optional[Dict] = None,
+):
+    """Сохранить настройки раунда (коэффициенты и комментарии)"""
+    import json
+    resource_texts = resource_texts if resource_texts is not None else {}
+    building_texts = building_texts if building_texts is not None else {}
     if is_postgresql():
         pool = await init_pool()
         async with pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO round_settings (game_id, round_number, resource_modifiers, building_modifiers, updated_at)
-                VALUES ($1, $2, $3, $4, NOW())
+                INSERT INTO round_settings (
+                    game_id, round_number, resource_modifiers, building_modifiers,
+                    resource_texts, building_texts, updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, NOW())
                 ON CONFLICT (game_id, round_number)
-                DO UPDATE SET resource_modifiers = $3, building_modifiers = $4, updated_at = NOW()
-            """, game_id, round_number, json.dumps(resource_modifiers), json.dumps(building_modifiers))
+                DO UPDATE SET
+                    resource_modifiers = EXCLUDED.resource_modifiers,
+                    building_modifiers = EXCLUDED.building_modifiers,
+                    resource_texts = EXCLUDED.resource_texts,
+                    building_texts = EXCLUDED.building_texts,
+                    updated_at = NOW()
+            """, game_id, round_number,
+                json.dumps(resource_modifiers), json.dumps(building_modifiers),
+                json.dumps(resource_texts), json.dumps(building_texts))
     else:
         db_path = get_sqlite_path()
         async with aiosqlite.connect(db_path) as conn:
             await conn.execute("""
-                INSERT OR REPLACE INTO round_settings (game_id, round_number, resource_modifiers, building_modifiers, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """, (game_id, round_number, json.dumps(resource_modifiers), json.dumps(building_modifiers)))
+                INSERT OR REPLACE INTO round_settings (
+                    game_id, round_number, resource_modifiers, building_modifiers,
+                    resource_texts, building_texts, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (
+                game_id, round_number,
+                json.dumps(resource_modifiers), json.dumps(building_modifiers),
+                json.dumps(resource_texts), json.dumps(building_texts),
+            ))
             await conn.commit()
 
 async def get_round_settings(game_id: int, round_number: Optional[int] = None) -> List[Dict]:
@@ -1378,13 +1754,15 @@ async def get_round_settings(game_id: int, round_number: Optional[int] = None) -
         async with pool.acquire() as conn:
             if round_number:
                 rows = await conn.fetch("""
-                    SELECT round_number, resource_modifiers, building_modifiers
+                    SELECT round_number, resource_modifiers, building_modifiers,
+                           resource_texts, building_texts
                     FROM round_settings
                     WHERE game_id = $1 AND round_number = $2
                 """, game_id, round_number)
             else:
                 rows = await conn.fetch("""
-                    SELECT round_number, resource_modifiers, building_modifiers
+                    SELECT round_number, resource_modifiers, building_modifiers,
+                           resource_texts, building_texts
                     FROM round_settings
                     WHERE game_id = $1
                     ORDER BY round_number
@@ -1394,7 +1772,9 @@ async def get_round_settings(game_id: int, round_number: Optional[int] = None) -
                 result.append({
                     "round_number": row["round_number"],
                     "resource_modifiers": json.loads(row["resource_modifiers"]) if row["resource_modifiers"] else {},
-                    "building_modifiers": json.loads(row["building_modifiers"]) if row["building_modifiers"] else {}
+                    "building_modifiers": json.loads(row["building_modifiers"]) if row["building_modifiers"] else {},
+                    "resource_texts": json.loads(row["resource_texts"]) if row["resource_texts"] else {},
+                    "building_texts": json.loads(row["building_texts"]) if row["building_texts"] else {},
                 })
             return result
     else:
@@ -1403,13 +1783,15 @@ async def get_round_settings(game_id: int, round_number: Optional[int] = None) -
             conn.row_factory = aiosqlite.Row
             if round_number:
                 cursor = await conn.execute("""
-                    SELECT round_number, resource_modifiers, building_modifiers
+                    SELECT round_number, resource_modifiers, building_modifiers,
+                           resource_texts, building_texts
                     FROM round_settings
                     WHERE game_id = ? AND round_number = ?
                 """, (game_id, round_number))
             else:
                 cursor = await conn.execute("""
-                    SELECT round_number, resource_modifiers, building_modifiers
+                    SELECT round_number, resource_modifiers, building_modifiers,
+                           resource_texts, building_texts
                     FROM round_settings
                     WHERE game_id = ?
                     ORDER BY round_number
@@ -1420,7 +1802,9 @@ async def get_round_settings(game_id: int, round_number: Optional[int] = None) -
                 result.append({
                     "round_number": row["round_number"],
                     "resource_modifiers": json.loads(row["resource_modifiers"]) if row["resource_modifiers"] else {},
-                    "building_modifiers": json.loads(row["building_modifiers"]) if row["building_modifiers"] else {}
+                    "building_modifiers": json.loads(row["building_modifiers"]) if row["building_modifiers"] else {},
+                    "resource_texts": json.loads(row["resource_texts"]) if row["resource_texts"] else {},
+                    "building_texts": json.loads(row["building_texts"]) if row["building_texts"] else {},
                 })
             return result
 
@@ -1698,7 +2082,8 @@ async def get_game_by_code(game_code: str) -> Optional[Dict]:
         async with pool.acquire() as conn:
             row = await conn.fetchrow("""
                 SELECT id, num_players, current_round, status, game_code, 
-                       company_name, description, config_data, created_at, updated_at
+                       company_name, description, config_data, created_at, updated_at,
+                       round_trading_locked
                 FROM games WHERE game_code = $1
             """, game_code)
             if row:
@@ -1710,7 +2095,8 @@ async def get_game_by_code(game_code: str) -> Optional[Dict]:
             conn.row_factory = aiosqlite.Row
             cursor = await conn.execute("""
                 SELECT id, num_players, current_round, status, game_code,
-                       company_name, description, config_data, created_at, updated_at
+                       company_name, description, config_data, created_at, updated_at,
+                       round_trading_locked
                 FROM games WHERE game_code = ?
             """, (game_code,))
             row = await cursor.fetchone()
@@ -1910,6 +2296,104 @@ async def get_game_config(game_id: int) -> Optional[Dict]:
                     return config_json
     except Exception as e:
         raise Exception(f"Ошибка загрузки конфигурации игры: {e}")
+
+
+async def get_game_story_id(game_id: int) -> Optional[str]:
+    """ID активного сюжета из config_data игры."""
+    config = await get_game_config(game_id)
+    if not config:
+        return None
+    story_id = config.get("story_id")
+    if isinstance(story_id, str) and story_id.strip():
+        return story_id.strip()
+    return None
+
+
+async def set_game_story_id(game_id: int, story_id: Optional[str]) -> None:
+    """Сохранить или очистить ID сюжета в config_data игры."""
+    config = await get_game_config(game_id) or {}
+    if story_id and str(story_id).strip():
+        config["story_id"] = str(story_id).strip()
+    else:
+        config.pop("story_id", None)
+    await save_game_config(game_id, config)
+
+
+async def apply_story_to_game(game_id: int, story: Dict) -> Dict[str, int]:
+    """Применить сюжет: настройки раундов, события mini app и события ВЕБ."""
+    from game_config import RESOURCE_PRICES, BUILDING_COSTS
+
+    resources = list(RESOURCE_PRICES.keys())
+    buildings = list(BUILDING_COSTS.keys())
+    story_rounds = story.get("rounds") or {}
+
+    existing_events = {
+        row["round_number"]: row for row in await list_round_events_admin(game_id)
+    }
+    existing_web = {
+        row["round_number"]: row for row in await list_round_web_events_admin(game_id)
+    }
+
+    rounds_saved = 0
+    events_saved = 0
+    web_saved = 0
+
+    for round_num in range(1, 11):
+        rd = story_rounds.get(str(round_num)) or story_rounds.get(round_num)
+        if not rd:
+            continue
+
+        resource_modifiers = {}
+        resource_texts = {}
+        building_modifiers = {}
+        building_texts = {}
+        for resource in resources:
+            item = (rd.get("resources") or {}).get(resource) or {}
+            resource_modifiers[resource] = float(item.get("coef", 1.0) or 1.0)
+            resource_texts[resource] = str(item.get("comment") or "")
+        for building in buildings:
+            item = (rd.get("buildings") or {}).get(building) or {}
+            building_modifiers[building] = float(item.get("coef", 1.0) or 1.0)
+            building_texts[building] = str(item.get("comment") or "")
+
+        await save_round_settings(
+            game_id,
+            round_num,
+            resource_modifiers,
+            building_modifiers,
+            resource_texts=resource_texts,
+            building_texts=building_texts,
+        )
+        rounds_saved += 1
+
+        label = str(rd.get("event_label") or "").strip()
+        if label:
+            ev = existing_events.get(round_num, {})
+            await save_round_event_admin(
+                game_id,
+                round_num,
+                label,
+                ev.get("image_url") or "",
+            )
+            events_saved += 1
+
+            web = existing_web.get(round_num, {})
+            await save_round_web_event(
+                game_id,
+                round_num,
+                label,
+                web.get("image_url") or "",
+                web.get("bg_image_url") or "",
+                list(rd.get("highlight_resources") or []),
+                list(rd.get("highlight_buildings") or []),
+            )
+            web_saved += 1
+
+    return {
+        "rounds_saved": rounds_saved,
+        "events_saved": events_saved,
+        "web_saved": web_saved,
+    }
 
 
 # ПРИМЕЧАНИЕ: Асинхронные функции остаются асинхронными

@@ -53,10 +53,6 @@
                         <span class="nav-icon">📦</span>
                         <span class="nav-text">Архив</span>
                     </button>
-                    <button class="nav-item" data-section="settings">
-                        <span class="nav-icon">⚙️</span>
-                        <span class="nav-text">Настройки</span>
-                    </button>
                 </nav>
             </aside>
 
@@ -104,18 +100,6 @@
                     </div>
                 </section>
 
-                <!-- Секция: Настройки игры -->
-                <section id="section-settings" class="admin-section">
-                    <div class="section-header">
-                        <h2>Настройки игры</h2>
-                        <select id="settings-game-select" class="form-input">
-                            <option value="">Выберите игру...</option>
-                        </select>
-                    </div>
-                    <div id="game-settings-content" style="display: none;">
-                        <!-- Настройки будут загружаться динамически -->
-                    </div>
-                </section>
             </div>
         </main>
     </div>
@@ -137,7 +121,7 @@
                     <button class="tab-btn" data-tab="players">Персонажи</button>
                     <button class="tab-btn" data-tab="content">Контент</button>
                     <button class="tab-btn" data-tab="events">События</button>
-                    <button class="tab-btn" data-tab="game-config">Ресурсы/Объекты</button>
+                    <button class="tab-btn" data-tab="web-events">События ВЕБ</button>
                 </div>
 
                 <!-- Вкладка: Информация -->
@@ -180,7 +164,6 @@
                 <div id="tab-players" class="tab-content">
                     <div class="section-header">
                         <h3>Персонажи для выбора</h3>
-                        <p class="info-text" style="margin-top: 4px;">Эти персонажи отображаются на экране выбора. В рейтинг и игру попадают только те, кого выбрал игрок.</p>
                         <button id="add-player-btn" class="btn btn-primary">Добавить персонажа</button>
                     </div>
                     <div id="players-list" class="players-list">
@@ -202,21 +185,19 @@
                 <div id="tab-events" class="tab-content">
                     <div class="section-header">
                         <h3>События по раундам</h3>
-                        <p class="info-text" style="margin-top: 4px;">Текст и иллюстрация для каждого раунда. Загрузка файла идёт через ImgBB с тем же ключом на сервере, что и для аватаров персонажей; можно также вставить URL картинки вручную.</p>
                     </div>
                     <div id="round-events-list" class="round-content-list">
                         <div class="loading">Загрузка...</div>
                     </div>
                 </div>
 
-                <!-- Вкладка: Ресурсы/Объекты -->
-                <div id="tab-game-config" class="tab-content">
+                <!-- Вкладка: События ВЕБ (проектор) -->
+                <div id="tab-web-events" class="tab-content">
                     <div class="section-header">
-                        <h3>Настройка ресурсов и объектов</h3>
-                        <p class="info-text">Настройка доступных ресурсов и объектов для этой игры</p>
+                        <h3>События ВЕБ по раундам</h3>
                     </div>
-                    <div id="game-config-content" class="game-config-content">
-                        <div class="loading">Загрузка...</div>
+                    <div id="web-events-list" class="round-content-list">
+                        <div class="loading">Откройте вкладку для загрузки формы…</div>
                     </div>
                 </div>
             </div>

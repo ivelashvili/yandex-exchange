@@ -3,6 +3,8 @@
 let currentGameId = null;
 let currentGameCode = null;
 let adminToken = null;
+/** Выбранный сюжет по коду игры (синхронизируется с БД после «Применить»). */
+const adminSelectedStoryByGame = {};
 
 // ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
@@ -119,8 +121,6 @@ document.querySelectorAll('.nav-item').forEach(item => {
             loadActiveGames();
         } else if (section === 'archive') {
             loadArchiveGames();
-        } else if (section === 'settings') {
-            loadGamesForSettings();
         }
     });
 });
@@ -294,16 +294,18 @@ function openGameModal(gameCode, gameId) {
     currentGameId = gameId;
     
     document.getElementById('game-modal').style.display = 'flex';
-    loadGameInfo();
-    loadGamePlayers();
-    loadRoundContent();
-    loadRoundEvents();
     
     // Активируем первую вкладку
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
     document.querySelector('.tab-btn[data-tab="info"]').classList.add('active');
     document.getElementById('tab-info').classList.add('active');
+
+    loadGameInfo().then(() => {
+        loadGamePlayers();
+        loadRoundContent();
+        loadRoundEvents();
+    });
 }
 
 function closeGameModal() {
@@ -330,10 +332,10 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
             loadRoundContent();
         } else if (tab === 'events') {
             loadRoundEvents();
+        } else if (tab === 'web-events') {
+            loadWebEventsAdmin();
         } else if (tab === 'rounds') {
             loadRoundSettings();
-        } else if (tab === 'game-config') {
-            loadGameConfig();
         }
     });
 });
@@ -371,6 +373,10 @@ async function loadGameInfo() {
         const data = await response.json();
         // Обрабатываем оба формата: {success: true, game: {...}} или прямой объект
         const game = data.game || data;
+
+        if (currentGameCode) {
+            adminSelectedStoryByGame[currentGameCode] = game.story_id || '';
+        }
         
         modalGameCode.textContent = game.game_code || '-';
         modalGameId.textContent = game.game_id || game.id || '-';
@@ -554,7 +560,15 @@ async function loadRoundEvents() {
         rows.forEach((row) => {
             map[row.round_number] = row;
         });
-        listEl.innerHTML = Array.from({ length: 10 }, (_, i) => {
+
+        const storyPickerHtml = buildAdminStoryPickerHtml({
+            selectId: 'admin-events-story-select',
+            applyButtonId: 'admin-events-story-apply',
+            selectedStoryId: getAdminSelectedStoryId(),
+            hint: ADMIN_STORY_APPLY_HINT,
+        });
+
+        const roundsHtml = Array.from({ length: 10 }, (_, i) => {
             const roundNum = i + 1;
             const row = map[roundNum] || {};
             const rawText = row.event_text != null ? String(row.event_text) : '';
@@ -566,11 +580,9 @@ async function loadRoundEvents() {
                 ? `<div class="round-event-preview" id="event-r-${roundNum}-preview"><img src="${previewSrc}" alt="" class="round-event-preview-img" onerror="this.parentNode.innerHTML=''"></div>`
                 : `<div class="round-event-preview" id="event-r-${roundNum}-preview"></div>`;
             return `
-            <div class="round-content-item">
-                <div class="round-content-header">
-                    <span class="round-number">Раунд ${roundNum}</span>
-                </div>
-                <form class="round-content-form" onsubmit="saveRoundEvent(event, ${roundNum})">
+                <details class="admin-collapsible round-settings-collapsible">
+                    <summary>Раунд ${roundNum}</summary>
+                    <form class="round-content-form round-settings-form" onsubmit="saveRoundEvent(event, ${roundNum})">
                     <div class="form-group">
                         <label>Текст события:</label>
                         <textarea class="form-input round-event-textarea" id="event-r-${roundNum}-text" rows="4" placeholder="Описание события для этого раунда">${safeText}</textarea>
@@ -589,9 +601,12 @@ async function loadRoundEvents() {
                     </div>
                     ${previewHtml}
                     <button type="submit" class="btn btn-primary">Сохранить</button>
-                </form>
-            </div>`;
+                    </form>
+                </details>`;
         }).join('');
+
+        listEl.innerHTML = storyPickerHtml + roundsHtml;
+        bindAdminStoryPicker('events');
     } catch (error) {
         console.error('Ошибка загрузки событий раундов:', error);
         listEl.innerHTML = `<div class="error-message">Ошибка загрузки: ${error.message || 'Неизвестная ошибка'}</div>`;
@@ -657,6 +672,426 @@ async function saveRoundEvent(event, roundNumber) {
     }
 }
 
+const ADMIN_ALL_RESOURCES = ['камень', 'дерево', 'железо', 'скот', 'овощи', 'рабы', 'золото', 'зерно', 'рыба'];
+const ADMIN_ALL_BUILDINGS = [
+    'Лесоповал', 'Каменоломня', 'Теплицы', 'Трактир', 'Посевные поля', 'Рыболовня',
+    'Кузнечная', 'Ферма', 'Постоялый двор', 'Куртизанские палатки', 'Золотой рудник',
+];
+
+/** Список сюжетов в админке (данные — static/stories/{id}.json). */
+const ADMIN_AVAILABLE_STORIES = [
+    { id: '', label: '— не выбран —' },
+    { id: 'story-1', label: 'Сюжет 1' },
+    { id: 'story-2', label: 'Сюжет 2 (черновик)' },
+    { id: 'story-3', label: 'Сюжет 3 (черновик)' },
+];
+
+const ADMIN_STORY_APPLY_HINT = 'Применяет сюжет ко всей игре (раунды, события, подсветка ресурсов/объектов) и сохраняет в БД.';
+
+function getAdminSelectedStoryId() {
+    if (!currentGameCode) return '';
+    return adminSelectedStoryByGame[currentGameCode] || '';
+}
+
+function setAdminSelectedStoryId(storyId) {
+    if (!currentGameCode) return;
+    adminSelectedStoryByGame[currentGameCode] = storyId || '';
+    syncAdminStorySelects(storyId);
+}
+
+function reloadActiveAdminTab() {
+    const activeBtn = document.querySelector('.tab-btn.active');
+    const tab = activeBtn ? activeBtn.dataset.tab : null;
+    if (tab === 'rounds') loadRoundSettings();
+    else if (tab === 'events') loadRoundEvents();
+    else if (tab === 'web-events') loadWebEventsAdmin();
+}
+
+function syncAdminStorySelects(storyId) {
+    ['admin-story-select', 'admin-events-story-select', 'admin-web-events-story-select'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.value = storyId || '';
+    });
+}
+
+async function applyAdminStory(scope) {
+    const selectId = scope === 'events'
+        ? 'admin-events-story-select'
+        : scope === 'web-events'
+            ? 'admin-web-events-story-select'
+            : 'admin-story-select';
+    const selectEl = document.getElementById(selectId);
+    if (!selectEl || !currentGameCode) return;
+    const storyId = (selectEl.value || '').trim();
+    if (!storyId) {
+        alert('Выберите сюжет из списка');
+        return;
+    }
+    if (!confirm('Применить сюжет ко всей игре?\n\nБудут обновлены и сохранены в БД:\n• настройки раундов (коэффициенты и комментарии)\n• тексты событий (mini app и ВЕБ)\n• подсветка ресурсов и объектов на экране ведущего\n\nКартинки и фон в событиях сохранятся.')) {
+        return;
+    }
+    const applyBtn = document.getElementById(
+        scope === 'events' ? 'admin-events-story-apply'
+            : scope === 'web-events' ? 'admin-web-events-story-apply'
+                : 'admin-story-apply'
+    );
+    const origText = applyBtn ? applyBtn.textContent : '';
+    if (applyBtn) {
+        applyBtn.disabled = true;
+        applyBtn.textContent = 'Применение...';
+    }
+    try {
+        const response = await fetch(`/api/admin/games/${currentGameCode}/apply-story`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${adminToken}`,
+            },
+            body: JSON.stringify({ story_id: storyId }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error || `Ошибка (${response.status})`);
+        }
+        setAdminSelectedStoryId(data.story_id || storyId);
+        const stats = data.stats || {};
+        alert(
+            `Сюжет «${data.story_title || storyId}» применён и сохранён.\n\n` +
+            `Раундов: ${stats.rounds_saved ?? 0}, событий: ${stats.events_saved ?? 0}, событий ВЕБ: ${stats.web_saved ?? 0}`
+        );
+        reloadActiveAdminTab();
+    } catch (error) {
+        console.error('applyAdminStory:', error);
+        alert(error.message || 'Не удалось применить сюжет');
+    } finally {
+        if (applyBtn) {
+            applyBtn.disabled = false;
+            applyBtn.textContent = origText;
+        }
+    }
+}
+
+function bindAdminStoryPicker(scope) {
+    const selectId = scope === 'events'
+        ? 'admin-events-story-select'
+        : scope === 'web-events'
+            ? 'admin-web-events-story-select'
+            : 'admin-story-select';
+    const applyId = scope === 'events'
+        ? 'admin-events-story-apply'
+        : scope === 'web-events'
+            ? 'admin-web-events-story-apply'
+            : 'admin-story-apply';
+    const selectEl = document.getElementById(selectId);
+    const applyEl = document.getElementById(applyId);
+    if (applyEl && !applyEl.dataset.bound) {
+        applyEl.dataset.bound = '1';
+        applyEl.addEventListener('click', () => applyAdminStory(scope));
+    }
+    if (selectEl && !selectEl.dataset.bound) {
+        selectEl.dataset.bound = '1';
+        selectEl.addEventListener('change', () => setAdminSelectedStoryId(selectEl.value || ''));
+    }
+}
+
+function buildAdminStoryPickerHtml({
+    selectId = 'admin-story-select',
+    applyButtonId = '',
+    selectedStoryId = '',
+    hint = 'Выберите сюжет и нажмите «Применить сюжет».',
+} = {}) {
+    const selected = selectedStoryId || '';
+    const options = ADMIN_AVAILABLE_STORIES.map((story) => {
+        const sel = story.id === selected ? ' selected' : '';
+        return `<option value="${escapeHtml(story.id)}"${sel}>${escapeHtml(story.label)}</option>`;
+    }).join('');
+    const applyBtn = applyButtonId
+        ? `<button type="button" id="${applyButtonId}" class="btn btn-secondary admin-story-apply-btn">Применить сюжет</button>`
+        : '';
+    return `
+        <details class="admin-collapsible rounds-story-picker" open>
+            <summary>Выбрать сюжет</summary>
+            <div class="rounds-story-picker-body">
+                <div class="form-group">
+                    <label for="${selectId}">Сюжет игры</label>
+                    <select id="${selectId}" class="form-input admin-story-select">
+                        ${options}
+                    </select>
+                    <p class="admin-field-hint">${escapeHtml(hint)}</p>
+                    ${applyBtn}
+                </div>
+            </div>
+        </details>`;
+}
+
+function buildRoundSettingsStoryPickerHtml(selectedStoryId) {
+    return buildAdminStoryPickerHtml({
+        selectId: 'admin-story-select',
+        applyButtonId: 'admin-story-apply',
+        selectedStoryId: selectedStoryId != null ? selectedStoryId : getAdminSelectedStoryId(),
+        hint: ADMIN_STORY_APPLY_HINT,
+    });
+}
+
+function buildRoundModifierFieldHtml(roundNum, kind, itemName, coefValue, textValue) {
+    const safeName = escapeHtml(itemName);
+    const kindPrefix = kind === 'resource' ? 'resource' : 'building';
+    const coefId = `round-${roundNum}-${kindPrefix}-${itemName}`;
+    const textId = `${coefId}-text`;
+    const safeCoef = coefValue != null && coefValue !== '' ? escapeHtml(String(coefValue)) : '1.0';
+    const safeText = escapeHtml(textValue != null ? String(textValue) : '');
+    return `
+        <div class="round-modifier-field">
+            <div class="round-modifier-field-title">${safeName}</div>
+            <div class="form-group round-modifier-coef">
+                <label for="${coefId}">Коэффициент</label>
+                <input type="number" step="0.01" class="form-input"
+                       id="${coefId}"
+                       value="${safeCoef}"
+                       placeholder="1.0">
+            </div>
+            <div class="form-group round-modifier-text">
+                <label for="${textId}">Текст</label>
+                <input type="text" class="form-input round-modifier-text-input"
+                       id="${textId}"
+                       value="${safeText}"
+                       placeholder="Комментарий к коэффициенту">
+            </div>
+        </div>`;
+}
+
+function buildWebEventCheckboxGrid(roundNum, fieldType, allItems, checkedItems) {
+    const checkedSet = new Set(checkedItems || []);
+    return allItems.map((item, index) => {
+        const safe = escapeHtml(item);
+        const isChecked = checkedSet.has(item) ? 'checked' : '';
+        const inputId = `web-r-${roundNum}-${fieldType}-${index}`;
+        return `
+            <label class="admin-checkbox-label" for="${inputId}">
+                <input type="checkbox" id="${inputId}" class="web-event-checkbox"
+                       data-round="${roundNum}" data-kind="${fieldType}"
+                       name="web-r-${roundNum}-${fieldType}" value="${safe}" ${isChecked}>
+                <span>${safe}</span>
+            </label>`;
+    }).join('');
+}
+
+function getWebEventCheckedItems(roundNum, fieldType) {
+    const inputs = document.querySelectorAll(`input[name="web-r-${roundNum}-${fieldType}"]:checked`);
+    return Array.from(inputs).map((el) => el.value);
+}
+
+async function loadWebEventsAdmin() {
+    if (!currentGameCode) {
+        console.error('currentGameCode не установлен');
+        return;
+    }
+    const listEl = document.getElementById('web-events-list');
+    if (!listEl) return;
+    listEl.innerHTML = '<div class="loading">Загрузка...</div>';
+    let map = {};
+    try {
+        const response = await fetch(`/api/admin/games/${currentGameCode}/web-events`, {
+            headers: { 'Authorization': `Bearer ${adminToken}` },
+        });
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || `Ошибка загрузки (${response.status})`);
+        }
+        const data = await response.json();
+        (data.events || []).forEach((row) => {
+            map[row.round_number] = row;
+        });
+    } catch (error) {
+        console.error('Ошибка загрузки событий ВЕБ:', error);
+        listEl.innerHTML = `<div class="error-message">Ошибка загрузки: ${error.message || 'Неизвестная ошибка'}</div>`;
+        return;
+    }
+    const storyPickerHtml = buildAdminStoryPickerHtml({
+        selectId: 'admin-web-events-story-select',
+        applyButtonId: 'admin-web-events-story-apply',
+        selectedStoryId: getAdminSelectedStoryId(),
+        hint: ADMIN_STORY_APPLY_HINT,
+    });
+
+    const roundsHtml = Array.from({ length: 10 }, (_, i) => {
+        const roundNum = i + 1;
+        const row = map[roundNum] || {};
+        const rawText = row.event_text != null ? String(row.event_text) : '';
+        const safeText = escapeHtml(rawText);
+        const rawUrl = row.image_url != null ? String(row.image_url) : '';
+        const safeUrlAttr = rawUrl.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        const rawBg = row.bg_image_url != null ? String(row.bg_image_url) : '';
+        const safeBgAttr = rawBg.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        const previewSrc = rawUrl ? escapeHtml(rawUrl.trim()) : '';
+        const previewHtml = previewSrc
+            ? `<div class="round-event-preview" id="web-r-${roundNum}-preview"><img src="${previewSrc}" alt="" class="round-event-preview-img" onerror="this.parentNode.innerHTML=''"></div>`
+            : `<div class="round-event-preview" id="web-r-${roundNum}-preview"></div>`;
+        const bgPreviewSrc = rawBg ? escapeHtml(rawBg.trim()) : '';
+        const bgPreviewHtml = bgPreviewSrc
+            ? `<div class="round-event-preview web-event-bg-preview" id="web-r-${roundNum}-bg-preview"><img src="${bgPreviewSrc}" alt="" class="web-event-bg-preview-img" onerror="this.parentNode.innerHTML=''"></div>`
+            : `<div class="round-event-preview web-event-bg-preview" id="web-r-${roundNum}-bg-preview"></div>`;
+        const resourcesGrid = buildWebEventCheckboxGrid(roundNum, 'resource', ADMIN_ALL_RESOURCES, row.highlight_resources || []);
+        const buildingsGrid = buildWebEventCheckboxGrid(roundNum, 'building', ADMIN_ALL_BUILDINGS, row.highlight_buildings || []);
+        return `
+            <details class="admin-collapsible round-settings-collapsible web-events-round-item">
+                <summary>Раунд ${roundNum}</summary>
+                <form class="round-content-form web-events-form round-settings-form" onsubmit="saveWebRoundEvent(event, ${roundNum})">
+                    <div class="form-group">
+                        <label>Текст:</label>
+                        <textarea class="form-input round-event-textarea" id="web-r-${roundNum}-text" rows="4"
+                                  placeholder="Текст события для экрана ведущего">${safeText}</textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Картинка (URL):</label>
+                        <input type="url" class="form-input" id="web-r-${roundNum}-image" value="${safeUrlAttr}"
+                               placeholder="https://... или загрузите файл ниже"
+                               oninput="updateWebEventPreview(${roundNum})">
+                    </div>
+                    <div class="form-group round-event-upload-row">
+                        <input type="file" id="web-r-${roundNum}-file" accept="image/*" style="display:none"
+                               onchange="onWebEventImageChosen(${roundNum}, this)">
+                        <button type="button" class="btn btn-secondary"
+                                onclick="document.getElementById('web-r-${roundNum}-file').click()">Загрузить картинку</button>
+                        <span class="round-event-upload-status" id="web-r-${roundNum}-upload-status"></span>
+                    </div>
+                    ${previewHtml}
+
+                    <div class="form-group">
+                        <label>Картинка фона (URL):</label>
+                        <input type="url" class="form-input" id="web-r-${roundNum}-bg" value="${safeBgAttr}"
+                               placeholder="https://... или загрузите файл ниже"
+                               oninput="updateWebEventBgPreview(${roundNum})">
+                    </div>
+                    <div class="form-group round-event-upload-row">
+                        <input type="file" id="web-r-${roundNum}-bg-file" accept="image/*" style="display:none"
+                               onchange="onWebEventBgImageChosen(${roundNum}, this)">
+                        <button type="button" class="btn btn-secondary"
+                                onclick="document.getElementById('web-r-${roundNum}-bg-file').click()">Загрузить фон</button>
+                        <span class="round-event-upload-status" id="web-r-${roundNum}-bg-upload-status"></span>
+                    </div>
+                    ${bgPreviewHtml}
+
+                    <details class="admin-collapsible">
+                        <summary>Ресурсы</summary>
+                        <div class="admin-checkbox-grid">${resourcesGrid}</div>
+                    </details>
+
+                    <details class="admin-collapsible">
+                        <summary>Объекты</summary>
+                        <div class="admin-checkbox-grid">${buildingsGrid}</div>
+                    </details>
+
+                    <button type="submit" class="btn btn-primary btn-save-web-event">Сохранить</button>
+                </form>
+            </details>`;
+    }).join('');
+
+    listEl.innerHTML = storyPickerHtml + roundsHtml;
+    bindAdminStoryPicker('web-events');
+}
+
+function updateWebEventPreview(roundNum) {
+    const imgInput = document.getElementById(`web-r-${roundNum}-image`);
+    const box = document.getElementById(`web-r-${roundNum}-preview`);
+    if (!box || !imgInput) return;
+    const url = (imgInput.value || '').trim();
+    if (!url) {
+        box.innerHTML = '';
+        return;
+    }
+    const safe = escapeHtml(url);
+    box.innerHTML = `<img src="${safe}" alt="" class="round-event-preview-img" onerror="this.style.display='none'">`;
+}
+
+function updateWebEventBgPreview(roundNum) {
+    const imgInput = document.getElementById(`web-r-${roundNum}-bg`);
+    const box = document.getElementById(`web-r-${roundNum}-bg-preview`);
+    if (!box || !imgInput) return;
+    const url = (imgInput.value || '').trim();
+    if (!url) {
+        box.innerHTML = '';
+        return;
+    }
+    const safe = escapeHtml(url);
+    box.innerHTML = `<img src="${safe}" alt="" class="web-event-bg-preview-img" onerror="this.style.display='none'">`;
+}
+
+async function onWebEventImageChosen(roundNum, fileInput) {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    const status = document.getElementById(`web-r-${roundNum}-upload-status`);
+    if (status) status.textContent = 'Загрузка...';
+    try {
+        const url = await uploadImageToImgBB(file);
+        const imgField = document.getElementById(`web-r-${roundNum}-image`);
+        if (imgField) imgField.value = url;
+        if (status) status.textContent = 'Готово';
+        updateWebEventPreview(roundNum);
+    } catch (error) {
+        console.error('Ошибка загрузки картинки (События ВЕБ):', error);
+        if (status) status.textContent = '';
+        alert(error.message || 'Ошибка загрузки изображения');
+    }
+    fileInput.value = '';
+}
+
+async function onWebEventBgImageChosen(roundNum, fileInput) {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    const status = document.getElementById(`web-r-${roundNum}-bg-upload-status`);
+    if (status) status.textContent = 'Загрузка...';
+    try {
+        const url = await uploadImageToImgBB(file);
+        const imgField = document.getElementById(`web-r-${roundNum}-bg`);
+        if (imgField) imgField.value = url;
+        if (status) status.textContent = 'Готово';
+        updateWebEventBgPreview(roundNum);
+    } catch (error) {
+        console.error('Ошибка загрузки фона (События ВЕБ):', error);
+        if (status) status.textContent = '';
+        alert(error.message || 'Ошибка загрузки изображения');
+    }
+    fileInput.value = '';
+}
+
+async function saveWebRoundEvent(event, roundNumber) {
+    event.preventDefault();
+    const textEl = document.getElementById(`web-r-${roundNumber}-text`);
+    const imgEl = document.getElementById(`web-r-${roundNumber}-image`);
+    const bgEl = document.getElementById(`web-r-${roundNumber}-bg`);
+    const event_text = textEl ? textEl.value : '';
+    const image_url = imgEl ? (imgEl.value || '').trim() : '';
+    const bg_image_url = bgEl ? (bgEl.value || '').trim() : '';
+    const highlight_resources = getWebEventCheckedItems(roundNumber, 'resource');
+    const highlight_buildings = getWebEventCheckedItems(roundNumber, 'building');
+    try {
+        const response = await fetch(`/api/admin/games/${currentGameCode}/web-events/${roundNumber}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${adminToken}`,
+            },
+            body: JSON.stringify({
+                event_text,
+                image_url,
+                bg_image_url,
+                highlight_resources,
+                highlight_buildings,
+            }),
+        });
+        if (response.ok) {
+            alert('Событие ВЕБ сохранено!');
+        } else {
+            const errorData = await response.json().catch(() => ({}));
+            alert(errorData.error || 'Ошибка сохранения');
+        }
+    } catch (error) {
+        console.error('Ошибка сохранения события ВЕБ:', error);
+        alert(`Ошибка подключения: ${error.message || 'Неизвестная ошибка'}`);
+    }
+}
+
 async function saveRoundContent(event, roundNumber) {
     event.preventDefault();
     const contentUrl = document.getElementById(`round-${roundNumber}-content`).value;
@@ -716,53 +1151,51 @@ async function loadRoundSettings() {
             settingsMap[setting.round_number] = setting;
         });
         
-        // Получаем список ресурсов и объектов из конфига
-        const resources = ['камень', 'дерево', 'железо', 'скот', 'овощи', 'рабы', 'золото', 'зерно', 'рыба'];
-        const buildings = ['Лесоповал', 'Каменоломня', 'Теплицы', 'Трактир', 'Посевные поля', 'Рыболовня', 
-                          'Кузнечная', 'Ферма', 'Постоялый двор', 'Куртизанские палатки', 'Золотой рудник'];
-        
-        // Создаем форму для всех 10 раундов
-        settingsDiv.innerHTML = Array.from({length: 10}, (_, i) => {
+        const storyPickerHtml = buildRoundSettingsStoryPickerHtml(getAdminSelectedStoryId());
+
+        const roundsHtml = Array.from({ length: 10 }, (_, i) => {
             const roundNum = i + 1;
             const setting = settingsMap[roundNum] || {};
             const resourceMods = setting.resource_modifiers || {};
             const buildingMods = setting.building_modifiers || {};
-            
+            const resourceTexts = setting.resource_texts || {};
+            const buildingTexts = setting.building_texts || {};
+
+            const resourcesGrid = ADMIN_ALL_RESOURCES.map((resource) =>
+                buildRoundModifierFieldHtml(
+                    roundNum,
+                    'resource',
+                    resource,
+                    resourceMods[resource] ?? 1.0,
+                    resourceTexts[resource] ?? ''
+                )
+            ).join('');
+
+            const buildingsGrid = ADMIN_ALL_BUILDINGS.map((building) =>
+                buildRoundModifierFieldHtml(
+                    roundNum,
+                    'building',
+                    building,
+                    buildingMods[building] ?? 1.0,
+                    buildingTexts[building] ?? ''
+                )
+            ).join('');
+
             return `
-                <div class="round-content-item">
-                    <div class="round-content-header">
-                        <span class="round-number">Раунд ${roundNum}</span>
-                    </div>
-                    <form class="round-content-form" onsubmit="saveRoundSettings(event, ${roundNum})">
-                        <h4 style="color: #d4af37; margin-bottom: 15px;">Коэффициенты ресурсов:</h4>
-                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 20px;">
-                            ${resources.map(resource => `
-                                <div class="form-group" style="margin-bottom: 10px;">
-                                    <label style="font-size: 0.9em;">${resource}:</label>
-                                    <input type="number" step="0.01" class="form-input" 
-                                           id="round-${roundNum}-resource-${resource}" 
-                                           value="${resourceMods[resource] || 1.0}"
-                                           placeholder="1.0" style="font-size: 0.9em;">
-                                </div>
-                            `).join('')}
-                        </div>
-                        <h4 style="color: #d4af37; margin-bottom: 15px;">Коэффициенты объектов:</h4>
-                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 20px;">
-                            ${buildings.map(building => `
-                                <div class="form-group" style="margin-bottom: 10px;">
-                                    <label style="font-size: 0.9em;">${building}:</label>
-                                    <input type="number" step="0.01" class="form-input" 
-                                           id="round-${roundNum}-building-${building}" 
-                                           value="${buildingMods[building] || 1.0}"
-                                           placeholder="1.0" style="font-size: 0.9em;">
-                                </div>
-                            `).join('')}
-                        </div>
+                <details class="admin-collapsible round-settings-collapsible">
+                    <summary>Раунд ${roundNum}</summary>
+                    <form class="round-content-form round-settings-form" onsubmit="saveRoundSettings(event, ${roundNum})">
+                        <h4 class="round-settings-section-title">Ресурсы</h4>
+                        <div class="round-modifier-grid">${resourcesGrid}</div>
+                        <h4 class="round-settings-section-title">Объекты</h4>
+                        <div class="round-modifier-grid">${buildingsGrid}</div>
                         <button type="submit" class="btn btn-primary">Сохранить настройки</button>
                     </form>
-                </div>
-            `;
+                </details>`;
         }).join('');
+
+        settingsDiv.innerHTML = storyPickerHtml + roundsHtml;
+        bindAdminStoryPicker('rounds');
     } catch (error) {
         console.error('Ошибка загрузки настроек раундов:', error);
         settingsDiv.innerHTML = `<div class="error-message">Ошибка загрузки настроек: ${error.message || 'Неизвестная ошибка'}</div>`;
@@ -771,13 +1204,9 @@ async function loadRoundSettings() {
 
 async function saveRoundSettings(event, roundNumber) {
     event.preventDefault();
-    
-    const resources = ['камень', 'дерево', 'железо', 'скот', 'овощи', 'рабы', 'золото', 'зерно', 'рыба'];
-    const buildings = ['Лесоповал', 'Каменоломня', 'Теплицы', 'Трактир', 'Посевные поля', 'Рыболовня', 
-                      'Кузнечная', 'Ферма', 'Постоялый двор', 'Куртизанские палатки', 'Золотой рудник'];
-    
+
     const resourceModifiers = {};
-    resources.forEach(resource => {
+    ADMIN_ALL_RESOURCES.forEach(resource => {
         const input = document.getElementById(`round-${roundNumber}-resource-${resource}`);
         if (input && input.value) {
             resourceModifiers[resource] = parseFloat(input.value) || 1.0;
@@ -785,13 +1214,25 @@ async function saveRoundSettings(event, roundNumber) {
     });
     
     const buildingModifiers = {};
-    buildings.forEach(building => {
+    ADMIN_ALL_BUILDINGS.forEach(building => {
         const input = document.getElementById(`round-${roundNumber}-building-${building}`);
         if (input && input.value) {
             buildingModifiers[building] = parseFloat(input.value) || 1.0;
         }
     });
-    
+
+    const resourceTexts = {};
+    ADMIN_ALL_RESOURCES.forEach(resource => {
+        const textEl = document.getElementById(`round-${roundNumber}-resource-${resource}-text`);
+        if (textEl) resourceTexts[resource] = textEl.value || '';
+    });
+
+    const buildingTexts = {};
+    ADMIN_ALL_BUILDINGS.forEach(building => {
+        const textEl = document.getElementById(`round-${roundNumber}-building-${building}-text`);
+        if (textEl) buildingTexts[building] = textEl.value || '';
+    });
+
     try {
         const response = await fetch(`/api/admin/games/${currentGameCode}/round-settings/${roundNumber}`, {
             method: 'POST',
@@ -801,7 +1242,9 @@ async function saveRoundSettings(event, roundNumber) {
             },
             body: JSON.stringify({
                 resource_modifiers: resourceModifiers,
-                building_modifiers: buildingModifiers
+                building_modifiers: buildingModifiers,
+                resource_texts: resourceTexts,
+                building_texts: buildingTexts,
             })
         });
         
@@ -858,21 +1301,28 @@ async function saveAllGameSettings() {
             }
         }
         // Сохраняем настройки раундов (коэффициенты), если форма есть в DOM
-        const resources = ['камень', 'дерево', 'железо', 'скот', 'овощи', 'рабы', 'золото', 'зерно', 'рыба'];
-        const buildings = ['Лесоповал', 'Каменоломня', 'Теплицы', 'Трактир', 'Посевные поля', 'Рыболовня',
-            'Кузнечная', 'Ферма', 'Постоялый двор', 'Куртизанские палатки', 'Золотой рудник'];
         for (let roundNum = 1; roundNum <= 10; roundNum++) {
             const resourceInput = document.getElementById(`round-${roundNum}-resource-камень`);
             if (!resourceInput) continue;
             const resourceModifiers = {};
-            resources.forEach(resource => {
+            ADMIN_ALL_RESOURCES.forEach(resource => {
                 const input = document.getElementById(`round-${roundNum}-resource-${resource}`);
                 if (input && input.value) resourceModifiers[resource] = parseFloat(input.value) || 1.0;
             });
             const buildingModifiers = {};
-            buildings.forEach(building => {
+            ADMIN_ALL_BUILDINGS.forEach(building => {
                 const input = document.getElementById(`round-${roundNum}-building-${building}`);
                 if (input && input.value) buildingModifiers[building] = parseFloat(input.value) || 1.0;
+            });
+            const resourceTexts = {};
+            ADMIN_ALL_RESOURCES.forEach(resource => {
+                const textEl = document.getElementById(`round-${roundNum}-resource-${resource}-text`);
+                if (textEl) resourceTexts[resource] = textEl.value || '';
+            });
+            const buildingTexts = {};
+            ADMIN_ALL_BUILDINGS.forEach(building => {
+                const textEl = document.getElementById(`round-${roundNum}-building-${building}-text`);
+                if (textEl) buildingTexts[building] = textEl.value || '';
             });
             try {
                 const res = await fetch(`/api/admin/games/${currentGameCode}/round-settings/${roundNum}`, {
@@ -881,7 +1331,12 @@ async function saveAllGameSettings() {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${adminToken}`
                     },
-                    body: JSON.stringify({ resource_modifiers: resourceModifiers, building_modifiers: buildingModifiers })
+                    body: JSON.stringify({
+                        resource_modifiers: resourceModifiers,
+                        building_modifiers: buildingModifiers,
+                        resource_texts: resourceTexts,
+                        building_texts: buildingTexts,
+                    })
                 });
                 if (res.ok) saved++; else errors.push(`Раунд ${roundNum} настройки: ${(await res.json().catch(() => ({}))).error || res.status}`);
             } catch (e) {
@@ -1343,33 +1798,6 @@ document.getElementById('add-player-form').addEventListener('submit', async (e) 
     }
 });
 
-// ========== ЗАГРУЗКА ИГР ДЛЯ НАСТРОЕК ==========
-
-async function loadGamesForSettings() {
-    const select = document.getElementById('settings-game-select');
-    select.innerHTML = '<option value="">Выберите игру...</option>';
-    
-    try {
-        const response = await fetch('/api/admin/games/active', {
-            headers: {
-                'Authorization': `Bearer ${adminToken}`
-            }
-        });
-        
-        if (response.ok) {
-            const data = await response.json();
-            data.games.forEach(game => {
-                const option = document.createElement('option');
-                option.value = game.game_code;
-                option.textContent = `${game.game_code} (Раунд ${game.current_round})`;
-                select.appendChild(option);
-            });
-        }
-    } catch (error) {
-        console.error('Ошибка загрузки игр:', error);
-    }
-}
-
 /** Удалить персонажа из каталога (по имени). */
 async function deleteCharacter(characterName) {
     if (!characterName) return;
@@ -1500,610 +1928,6 @@ async function uploadImageToImgBB(file) {
 // УДАЛЕНО: Персонажи объединены с игроками
 // Теперь при добавлении игрока сразу указывается имя и изображение персонажа
 
-// ========== НАСТРОЙКА РЕСУРСОВ/ОБЪЕКТОВ ==========
-
-async function loadGameConfig() {
-    const configContent = document.getElementById('game-config-content');
-    configContent.innerHTML = '<div class="loading">Загрузка...</div>';
-    
-    try {
-        // Загружаем текущую конфигурацию игры
-        const response = await fetch(`/api/admin/games/${currentGameCode}/config`, {
-            headers: {
-                'Authorization': `Bearer ${adminToken}`
-            }
-        });
-        
-        if (!response.ok) {
-            // Если эндпоинт не существует, показываем дефолтную конфигурацию
-            showDefaultGameConfig();
-            return;
-        }
-        
-        const data = await response.json();
-        showGameConfig(data);
-    } catch (error) {
-        // Показываем дефолтную конфигурацию при ошибке
-        showDefaultGameConfig();
-    }
-}
-
-function showDefaultGameConfig() {
-    const configContent = document.getElementById('game-config-content');
-    configContent.innerHTML = `
-        <div class="info-message">
-            <p>Настройка ресурсов и объектов для игры находится в разработке.</p>
-            <p>В данный момент используются ресурсы и объекты из конфигурации по умолчанию.</p>
-        </div>
-    `;
-}
-
-function showGameConfig(config) {
-    const configContent = document.getElementById('game-config-content');
-    
-    if (!config || !config.config) {
-        showDefaultGameConfig();
-        return;
-    }
-    
-    const gameConfig = config.config;
-    const enabledResources = gameConfig.enabled_resources || [];
-    const enabledBuildings = gameConfig.enabled_buildings || [];
-    
-    // Дефолтные значения из game_config.py
-    const defaultResourcePrices = {
-        "камень": 20, "дерево": 15, "железо": 40, "скот": 50, "овощи": 25,
-        "рабы": 80, "золото": 100, "зерно": 30, "рыба": 35
-    };
-    const defaultBuildingCosts = {
-        "Лесоповал": {"железо": 5, "рабы": 3},
-        "Каменоломня": {"дерево": 10, "железо": 5, "рабы": 3},
-        "Теплицы": {"дерево": 16, "железо": 5, "овощи": 8},
-        "Трактир": {"дерево": 14, "камень": 10, "железо": 3, "золото": 1},
-        "Посевные поля": {"дерево": 10, "зерно": 12, "рабы": 2},
-        "Рыболовня": {"дерево": 18, "железо": 6, "камень": 5},
-        "Кузнечная": {"камень": 18, "железо": 12, "дерево": 10, "золото": 2},
-        "Ферма": {"дерево": 16, "камень": 10, "скот": 4, "зерно": 8},
-        "Постоялый двор": {"дерево": 20, "камень": 14, "железо": 5, "золото": 2},
-        "Куртизанские палатки": {"дерево": 14, "золото": 5, "рабы": 5},
-        "Золотой рудник": {"камень": 20, "железо": 10, "рабы": 5, "золото": 3}
-    };
-    const defaultBuildingIncome = {
-        "Лесоповал": {"монеты": 0, "ресурсы": {"дерево": 3}},
-        "Каменоломня": {"монеты": 0, "ресурсы": {"камень": 3}},
-        "Теплицы": {"монеты": 0, "ресурсы": {"овощи": 3}},
-        "Трактир": {"монеты": 63, "ресурсы": {}},
-        "Посевные поля": {"монеты": 0, "ресурсы": {"зерно": 3}},
-        "Рыболовня": {"монеты": 0, "ресурсы": {"рыба": 3}},
-        "Кузнечная": {"монеты": 0, "ресурсы": {"железо": 4}},
-        "Ферма": {"монеты": 0, "ресурсы": {"скот": 3}},
-        "Постоялый двор": {"монеты": 147, "ресурсы": {}},
-        "Куртизанские палатки": {"монеты": 167, "ресурсы": {}},
-        "Золотой рудник": {"монеты": 0, "ресурсы": {"золото": 2}}
-    };
-    
-    // Текущие кастомные значения (если есть)
-    const customResourcePrices = gameConfig.resource_prices || {};
-    const customBuildingCosts = gameConfig.building_costs || {};
-    const customBuildingIncome = gameConfig.building_income || {};
-    
-    // Получаем все доступные ресурсы и объекты из дефолтной конфигурации
-    const allResources = ['камень', 'дерево', 'железо', 'скот', 'овощи', 'рабы', 'золото', 'зерно', 'рыба'];
-    const allBuildings = ['Лесоповал', 'Каменоломня', 'Теплицы', 'Трактир', 'Посевные поля', 'Рыболовня', 
-                          'Кузнечная', 'Ферма', 'Постоялый двор', 'Куртизанские палатки', 'Золотой рудник'];
-    
-    // Создаем форму для настройки
-    let html = `
-        <form id="game-config-form" class="admin-form" onsubmit="saveGameConfig(event)">
-            <div class="config-section">
-                <h4 style="color: #d4af37; margin-bottom: 15px;">Доступные ресурсы:</h4>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 20px;">
-    `;
-    
-    // Чекбоксы для ресурсов
-    allResources.forEach(resource => {
-        const isEnabled = enabledResources.includes(resource);
-        const safeResource = escapeHtml(resource);
-        html += `
-            <div class="form-group" style="margin-bottom: 10px;">
-                <label style="display: flex; align-items: center; cursor: pointer;">
-                    <input type="checkbox" 
-                           name="resource" 
-                           value="${safeResource}" 
-                           ${isEnabled ? 'checked' : ''}
-                           style="margin-right: 8px; width: 20px; height: 20px;">
-                    <span>${safeResource}</span>
-                </label>
-            </div>
-        `;
-    });
-    
-    html += `
-                </div>
-            </div>
-            
-            <div class="config-section" style="margin-top: 30px;">
-                <h4 style="color: #d4af37; margin-bottom: 15px;">Доступные объекты:</h4>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 20px;">
-    `;
-    
-    // Чекбоксы для объектов
-    allBuildings.forEach(building => {
-        const isEnabled = enabledBuildings.includes(building);
-        const safeBuilding = escapeHtml(building);
-        html += `
-            <div class="form-group" style="margin-bottom: 10px;">
-                <label style="display: flex; align-items: center; cursor: pointer;">
-                    <input type="checkbox" 
-                           name="building" 
-                           value="${safeBuilding}" 
-                           ${isEnabled ? 'checked' : ''}
-                           style="margin-right: 8px; width: 20px; height: 20px;">
-                    <span>${safeBuilding}</span>
-                </label>
-            </div>
-        `;
-    });
-    
-    html += `
-                </div>
-            </div>
-            
-            <!-- Кастомные цены на ресурсы -->
-            <div class="config-section" style="margin-top: 30px; padding: 20px; background: rgba(28, 24, 16, 0.6); border-radius: 8px; border: 1px solid #8b4513;">
-                <h4 style="color: #d4af37; margin-bottom: 15px;">
-                    Кастомные цены на ресурсы
-                    <button type="button" onclick="resetResourcePrices()" class="btn btn-secondary btn-sm" style="margin-left: 10px; padding: 4px 8px; font-size: 0.8em;">Сбросить к дефолтным</button>
-                </h4>
-                <p style="color: #c9a961; font-size: 0.9em; margin-bottom: 15px;">Настройте цены на ресурсы (в монетах). Оставьте пустым для использования дефолтных значений.</p>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">
-    `;
-    
-    // Поля ввода для цен на ресурсы (только для включенных)
-    enabledResources.forEach(resource => {
-        const safeResource = escapeHtml(resource);
-        const currentPrice = customResourcePrices[resource] || defaultResourcePrices[resource] || '';
-        const defaultPrice = defaultResourcePrices[resource] || '';
-        const isCustom = customResourcePrices[resource] !== undefined && customResourcePrices[resource] !== defaultPrice;
-        html += `
-            <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
-                <label style="min-width: 100px; color: #d4af37;">${safeResource}:</label>
-                <input type="number" 
-                       name="resource_price_${safeResource}" 
-                       value="${currentPrice}" 
-                       min="1" 
-                       step="1"
-                       placeholder="${defaultPrice}"
-                       style="flex: 1; padding: 8px; border: 1px solid #8b4513; border-radius: 4px; background: rgba(28, 24, 16, 0.8); color: #e8d5b7;">
-                <span style="color: #c9a961; font-size: 0.85em;">монет</span>
-                ${isCustom ? '<span style="color: #4caf50; font-size: 0.8em;">(кастомное)</span>' : ''}
-            </div>
-        `;
-    });
-    
-    html += `
-                </div>
-            </div>
-            
-            <!-- Кастомные стоимости объектов -->
-            <div class="config-section" style="margin-top: 30px; padding: 20px; background: rgba(28, 24, 16, 0.6); border-radius: 8px; border: 1px solid #8b4513;">
-                <h4 style="color: #d4af37; margin-bottom: 15px;">
-                    Кастомные стоимости объектов
-                    <button type="button" onclick="resetBuildingCosts()" class="btn btn-secondary btn-sm" style="margin-left: 10px; padding: 4px 8px; font-size: 0.8em;">Сбросить к дефолтным</button>
-                </h4>
-                <p style="color: #c9a961; font-size: 0.9em; margin-bottom: 15px;">Настройте стоимости строительства объектов (в ресурсах). Оставьте пустым для использования дефолтных значений.</p>
-    `;
-    
-    // Поля ввода для стоимостей объектов (только для включенных)
-    enabledBuildings.forEach(building => {
-        const safeBuilding = escapeHtml(building);
-        const currentCosts = customBuildingCosts[building] || defaultBuildingCosts[building] || {};
-        const defaultCosts = defaultBuildingCosts[building] || {};
-        const isCustom = JSON.stringify(currentCosts) !== JSON.stringify(defaultCosts);
-        
-        html += `
-            <div style="margin-bottom: 20px; padding: 15px; background: rgba(20, 18, 12, 0.6); border-radius: 6px; border-left: 3px solid #d4af37;">
-                <h5 style="color: #d4af37; margin-bottom: 10px;">
-                    ${safeBuilding}
-                    ${isCustom ? '<span style="color: #4caf50; font-size: 0.8em; margin-left: 10px;">(кастомное)</span>' : ''}
-                </h5>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;">
-        `;
-        
-        // Поля для каждого ресурса, который используется в стоимости этого объекта
-        const allResourcesForCosts = new Set();
-        if (defaultCosts) {
-            Object.keys(defaultCosts).forEach(r => allResourcesForCosts.add(r));
-        }
-        if (currentCosts) {
-            Object.keys(currentCosts).forEach(r => allResourcesForCosts.add(r));
-        }
-        
-        Array.from(allResourcesForCosts).forEach(resource => {
-            if (!enabledResources.includes(resource)) return; // Пропускаем ресурсы, не включенные в игру
-            
-            const safeResource = escapeHtml(resource);
-            const currentAmount = currentCosts[resource] || '';
-            const defaultAmount = defaultCosts[resource] || '';
-            html += `
-                <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
-                    <label style="min-width: 80px; color: #c9a961;">${safeResource}:</label>
-                    <input type="number" 
-                           name="building_cost_${safeBuilding}_${safeResource}" 
-                           value="${currentAmount}" 
-                           min="0" 
-                           step="1"
-                           placeholder="${defaultAmount}"
-                           style="flex: 1; padding: 6px; border: 1px solid #8b4513; border-radius: 4px; background: rgba(28, 24, 16, 0.8); color: #e8d5b7;">
-                </div>
-            `;
-        });
-        
-        html += `
-                </div>
-            </div>
-        `;
-    });
-    
-    html += `
-            </div>
-            
-            <!-- Кастомные доходы объектов -->
-            <div class="config-section" style="margin-top: 30px; padding: 20px; background: rgba(28, 24, 16, 0.6); border-radius: 8px; border: 1px solid #8b4513;">
-                <h4 style="color: #d4af37; margin-bottom: 15px;">
-                    Кастомные доходы объектов
-                    <button type="button" onclick="resetBuildingIncome()" class="btn btn-secondary btn-sm" style="margin-left: 10px; padding: 4px 8px; font-size: 0.8em;">Сбросить к дефолтным</button>
-                </h4>
-                <p style="color: #c9a961; font-size: 0.9em; margin-bottom: 15px;">Настройте доходы от объектов (монеты и ресурсы). Оставьте пустым для использования дефолтных значений.</p>
-    `;
-    
-    // Поля ввода для доходов объектов (только для включенных)
-    enabledBuildings.forEach(building => {
-        const safeBuilding = escapeHtml(building);
-        const currentIncome = customBuildingIncome[building] || defaultBuildingIncome[building] || {"монеты": 0, "ресурсы": {}};
-        const defaultIncome = defaultBuildingIncome[building] || {"монеты": 0, "ресурсы": {}};
-        const isCustom = JSON.stringify(currentIncome) !== JSON.stringify(defaultIncome);
-        
-        html += `
-            <div style="margin-bottom: 20px; padding: 15px; background: rgba(20, 18, 12, 0.6); border-radius: 6px; border-left: 3px solid #d4af37;">
-                <h5 style="color: #d4af37; margin-bottom: 10px;">
-                    ${safeBuilding}
-                    ${isCustom ? '<span style="color: #4caf50; font-size: 0.8em; margin-left: 10px;">(кастомное)</span>' : ''}
-                </h5>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;">
-                    <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
-                        <label style="min-width: 80px; color: #c9a961;">Монеты:</label>
-                        <input type="number" 
-                               name="building_income_${safeBuilding}_монеты" 
-                               value="${currentIncome.монеты || 0}" 
-                               min="0" 
-                               step="1"
-                               placeholder="${defaultIncome.монеты || 0}"
-                               style="flex: 1; padding: 6px; border: 1px solid #8b4513; border-radius: 4px; background: rgba(28, 24, 16, 0.8); color: #e8d5b7;">
-                    </div>
-        `;
-        
-        // Поля для ресурсов в доходах
-        const currentResources = currentIncome.ресурсы || {};
-        const defaultResources = defaultIncome.ресурсы || {};
-        const allResourcesForIncome = new Set();
-        if (defaultResources) {
-            Object.keys(defaultResources).forEach(r => allResourcesForIncome.add(r));
-        }
-        if (currentResources) {
-            Object.keys(currentResources).forEach(r => allResourcesForIncome.add(r));
-        }
-        
-        Array.from(allResourcesForIncome).forEach(resource => {
-            if (!enabledResources.includes(resource)) return; // Пропускаем ресурсы, не включенные в игру
-            
-            const safeResource = escapeHtml(resource);
-            const currentAmount = currentResources[resource] || '';
-            const defaultAmount = defaultResources[resource] || '';
-            html += `
-                <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
-                    <label style="min-width: 80px; color: #c9a961;">${safeResource}:</label>
-                    <input type="number" 
-                           name="building_income_${safeBuilding}_${safeResource}" 
-                           value="${currentAmount}" 
-                           min="0" 
-                           step="1"
-                           placeholder="${defaultAmount}"
-                           style="flex: 1; padding: 6px; border: 1px solid #8b4513; border-radius: 4px; background: rgba(28, 24, 16, 0.8); color: #e8d5b7;">
-                </div>
-            `;
-        });
-        
-        html += `
-                </div>
-            </div>
-        `;
-    });
-    
-    html += `
-            </div>
-            
-            <div class="modal-actions" style="margin-top: 30px;">
-                <button type="submit" class="btn btn-primary">Сохранить конфигурацию</button>
-            </div>
-        </form>
-    `;
-    
-    configContent.innerHTML = html;
-}
-
-async function saveGameConfig(event) {
-    event.preventDefault();
-    
-    if (!currentGameCode) {
-        alert('Код игры не установлен');
-        return;
-    }
-    
-    // Собираем выбранные ресурсы
-    const resourceCheckboxes = document.querySelectorAll('#game-config-form input[name="resource"]:checked');
-    const enabledResources = Array.from(resourceCheckboxes).map(cb => cb.value);
-    
-    // Собираем выбранные объекты
-    const buildingCheckboxes = document.querySelectorAll('#game-config-form input[name="building"]:checked');
-    const enabledBuildings = Array.from(buildingCheckboxes).map(cb => cb.value);
-    
-    // Валидация: должна быть хотя бы одна выбранная опция
-    if (enabledResources.length === 0) {
-        alert('Выберите хотя бы один ресурс');
-        return;
-    }
-    
-    if (enabledBuildings.length === 0) {
-        alert('Выберите хотя бы один объект');
-        return;
-    }
-    
-    // Дефолтные значения
-    const defaultResourcePrices = {
-        "камень": 20, "дерево": 15, "железо": 40, "скот": 50, "овощи": 25,
-        "рабы": 80, "золото": 100, "зерно": 30, "рыба": 35
-    };
-    const defaultBuildingCosts = {
-        "Лесоповал": {"железо": 5, "рабы": 3},
-        "Каменоломня": {"дерево": 10, "железо": 5, "рабы": 3},
-        "Теплицы": {"дерево": 16, "железо": 5, "овощи": 8},
-        "Трактир": {"дерево": 14, "камень": 10, "железо": 3, "золото": 1},
-        "Посевные поля": {"дерево": 10, "зерно": 12, "рабы": 2},
-        "Рыболовня": {"дерево": 18, "железо": 6, "камень": 5},
-        "Кузнечная": {"камень": 18, "железо": 12, "дерево": 10, "золото": 2},
-        "Ферма": {"дерево": 16, "камень": 10, "скот": 4, "зерно": 8},
-        "Постоялый двор": {"дерево": 20, "камень": 14, "железо": 5, "золото": 2},
-        "Куртизанские палатки": {"дерево": 14, "золото": 5, "рабы": 5},
-        "Золотой рудник": {"камень": 20, "железо": 10, "рабы": 5, "золото": 3}
-    };
-    const defaultBuildingIncome = {
-        "Лесоповал": {"монеты": 0, "ресурсы": {"дерево": 3}},
-        "Каменоломня": {"монеты": 0, "ресурсы": {"камень": 3}},
-        "Теплицы": {"монеты": 0, "ресурсы": {"овощи": 3}},
-        "Трактир": {"монеты": 63, "ресурсы": {}},
-        "Посевные поля": {"монеты": 0, "ресурсы": {"зерно": 3}},
-        "Рыболовня": {"монеты": 0, "ресурсы": {"рыба": 3}},
-        "Кузнечная": {"монеты": 0, "ресурсы": {"железо": 4}},
-        "Ферма": {"монеты": 0, "ресурсы": {"скот": 3}},
-        "Постоялый двор": {"монеты": 147, "ресурсы": {}},
-        "Куртизанские палатки": {"монеты": 167, "ресурсы": {}},
-        "Золотой рудник": {"монеты": 0, "ресурсы": {"золото": 2}}
-    };
-    
-    // Собираем кастомные цены на ресурсы
-    const resourcePrices = {};
-    for (const resource of enabledResources) {
-        const input = document.querySelector(`input[name="resource_price_${resource}"]`);
-        if (input && input.value.trim() !== '') {
-            const price = parseInt(input.value, 10);
-            if (isNaN(price) || price <= 0) {
-                alert(`Цена на ресурс "${resource}" должна быть положительным числом`);
-                return;
-            }
-            resourcePrices[resource] = price;
-        } else {
-            // Используем дефолтную цену
-            const defaultPrice = defaultResourcePrices[resource];
-            if (defaultPrice && defaultPrice > 0) {
-                resourcePrices[resource] = defaultPrice;
-            } else {
-                alert(`Не указана цена для ресурса "${resource}" и нет дефолтного значения`);
-                return;
-            }
-        }
-    }
-    
-    // Собираем кастомные стоимости объектов
-    const buildingCosts = {};
-    for (const building of enabledBuildings) {
-        buildingCosts[building] = {};
-        // Получаем все ресурсы, которые могут быть в стоимости этого объекта
-        const defaultCosts = defaultBuildingCosts[building] || {};
-        const allResourcesForCosts = new Set(Object.keys(defaultCosts));
-        
-        // Проверяем все поля ввода для этого объекта
-        for (const resource of enabledResources) {
-            const input = document.querySelector(`input[name="building_cost_${building}_${resource}"]`);
-            if (input) {
-                if (input.value.trim() !== '') {
-                    const amount = parseInt(input.value, 10);
-                    if (isNaN(amount) || amount < 0) {
-                        alert(`Количество ресурса "${resource}" для объекта "${building}" должно быть неотрицательным числом`);
-                        return;
-                    }
-                    buildingCosts[building][resource] = amount;
-                } else {
-                    // Если поле пустое, используем дефолтное значение (если есть)
-                    if (defaultCosts[resource] !== undefined) {
-                        buildingCosts[building][resource] = defaultCosts[resource];
-                    }
-                    // Если дефолтного значения нет, не добавляем ресурс (это нормально)
-                }
-            }
-        }
-        
-        // Удаляем пустые объекты (если объект не имеет ни одного ресурса в стоимости)
-        if (Object.keys(buildingCosts[building]).length === 0) {
-            // Используем дефолтные значения, если они есть
-            if (Object.keys(defaultCosts).length > 0) {
-                Object.assign(buildingCosts[building], defaultCosts);
-            }
-        }
-    }
-    
-    // Собираем кастомные доходы объектов
-    const buildingIncome = {};
-    for (const building of enabledBuildings) {
-        buildingIncome[building] = {"монеты": 0, "ресурсы": {}};
-        
-        // Монеты
-        const coinsInput = document.querySelector(`input[name="building_income_${building}_монеты"]`);
-        if (coinsInput && coinsInput.value.trim() !== '') {
-            const coins = parseInt(coinsInput.value, 10);
-            if (isNaN(coins) || coins < 0) {
-                alert(`Доход в монетах для объекта "${building}" должен быть неотрицательным числом`);
-                return;
-            }
-            buildingIncome[building].монеты = coins;
-        } else {
-            // Используем дефолтное значение
-            const defaultIncome = defaultBuildingIncome[building] || {"монеты": 0, "ресурсы": {}};
-            buildingIncome[building].монеты = defaultIncome.монеты || 0;
-        }
-        
-        // Ресурсы
-        for (const resource of enabledResources) {
-            const input = document.querySelector(`input[name="building_income_${building}_${resource}"]`);
-            if (input) {
-                if (input.value.trim() !== '') {
-                    const amount = parseInt(input.value, 10);
-                    if (isNaN(amount) || amount < 0) {
-                        alert(`Доход в ресурсе "${resource}" для объекта "${building}" должен быть неотрицательным числом`);
-                        return;
-                    }
-                    buildingIncome[building].ресурсы[resource] = amount;
-                } else {
-                    // Если поле пустое, используем дефолтное значение (если есть)
-                    const defaultIncome = defaultBuildingIncome[building] || {"монеты": 0, "ресурсы": {}};
-                    if (defaultIncome.ресурсы && defaultIncome.ресурсы[resource] !== undefined) {
-                        buildingIncome[building].ресурсы[resource] = defaultIncome.ресурсы[resource];
-                    }
-                    // Если дефолтного значения нет, не добавляем ресурс (это нормально)
-                }
-            }
-        }
-    }
-    
-    // Формируем конфигурацию
-    const config = {
-        enabled_resources: enabledResources,
-        enabled_buildings: enabledBuildings,
-        resource_prices: resourcePrices,
-        building_costs: buildingCosts,
-        building_income: buildingIncome
-    };
-    
-    try {
-        const response = await fetch(`/api/admin/games/${currentGameCode}/config`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${adminToken}`
-            },
-            body: JSON.stringify({ config })
-        });
-        
-        if (response.ok) {
-            alert('Конфигурация сохранена!');
-            loadGameConfig(); // Перезагружаем для отображения
-        } else {
-            const errorData = await response.json().catch(() => ({}));
-            alert(errorData.error || 'Ошибка сохранения конфигурации');
-        }
-    } catch (error) {
-        console.error('Ошибка сохранения конфигурации:', error);
-        alert(`Ошибка подключения к серверу: ${error.message || 'Неизвестная ошибка'}`);
-    }
-}
-
-// Функции для сброса к дефолтным значениям
-function resetResourcePrices() {
-    const defaultResourcePrices = {
-        "камень": 20, "дерево": 15, "железо": 40, "скот": 50, "овощи": 25,
-        "рабы": 80, "золото": 100, "зерно": 30, "рыба": 35
-    };
-    
-    Object.keys(defaultResourcePrices).forEach(resource => {
-        const input = document.querySelector(`input[name="resource_price_${resource}"]`);
-        if (input) {
-            input.value = defaultResourcePrices[resource];
-        }
-    });
-}
-
-function resetBuildingCosts() {
-    const defaultBuildingCosts = {
-        "Лесоповал": {"железо": 5, "рабы": 3},
-        "Каменоломня": {"дерево": 10, "железо": 5, "рабы": 3},
-        "Теплицы": {"дерево": 16, "железо": 5, "овощи": 8},
-        "Трактир": {"дерево": 14, "камень": 10, "железо": 3, "золото": 1},
-        "Посевные поля": {"дерево": 10, "зерно": 12, "рабы": 2},
-        "Рыболовня": {"дерево": 18, "железо": 6, "камень": 5},
-        "Кузнечная": {"камень": 18, "железо": 12, "дерево": 10, "золото": 2},
-        "Ферма": {"дерево": 16, "камень": 10, "скот": 4, "зерно": 8},
-        "Постоялый двор": {"дерево": 20, "камень": 14, "железо": 5, "золото": 2},
-        "Куртизанские палатки": {"дерево": 14, "золото": 5, "рабы": 5},
-        "Золотой рудник": {"камень": 20, "железо": 10, "рабы": 5, "золото": 3}
-    };
-    
-    Object.keys(defaultBuildingCosts).forEach(building => {
-        const costs = defaultBuildingCosts[building];
-        Object.keys(costs).forEach(resource => {
-            const input = document.querySelector(`input[name="building_cost_${building}_${resource}"]`);
-            if (input) {
-                input.value = costs[resource];
-            }
-        });
-    });
-}
-
-function resetBuildingIncome() {
-    const defaultBuildingIncome = {
-        "Лесоповал": {"монеты": 0, "ресурсы": {"дерево": 3}},
-        "Каменоломня": {"монеты": 0, "ресурсы": {"камень": 3}},
-        "Теплицы": {"монеты": 0, "ресурсы": {"овощи": 3}},
-        "Трактир": {"монеты": 63, "ресурсы": {}},
-        "Посевные поля": {"монеты": 0, "ресурсы": {"зерно": 3}},
-        "Рыболовня": {"монеты": 0, "ресурсы": {"рыба": 3}},
-        "Кузнечная": {"монеты": 0, "ресурсы": {"железо": 4}},
-        "Ферма": {"монеты": 0, "ресурсы": {"скот": 3}},
-        "Постоялый двор": {"монеты": 147, "ресурсы": {}},
-        "Куртизанские палатки": {"монеты": 167, "ресурсы": {}},
-        "Золотой рудник": {"монеты": 0, "ресурсы": {"золото": 2}}
-    };
-    
-    Object.keys(defaultBuildingIncome).forEach(building => {
-        const income = defaultBuildingIncome[building];
-        
-        // Монеты
-        const coinsInput = document.querySelector(`input[name="building_income_${building}_монеты"]`);
-        if (coinsInput) {
-            coinsInput.value = income.монеты || 0;
-        }
-        
-        // Ресурсы
-        if (income.ресурсы) {
-            Object.keys(income.ресурсы).forEach(resource => {
-                const input = document.querySelector(`input[name="building_income_${building}_${resource}"]`);
-                if (input) {
-                    input.value = income.ресурсы[resource];
-                }
-            });
-        }
-    });
-}
-
 // Экспорт функций для использования в HTML
 window.openGameModal = openGameModal;
 window.closeGameModal = closeGameModal;
@@ -2115,10 +1939,6 @@ window.saveRoundContent = saveRoundContent;
 window.saveRoundSettings = saveRoundSettings;
 window.deletePlayer = deletePlayer;
 window.deleteCharacter = deleteCharacter;
-window.saveGameConfig = saveGameConfig;
-window.resetResourcePrices = resetResourcePrices;
-window.resetBuildingCosts = resetBuildingCosts;
-window.resetBuildingIncome = resetBuildingIncome;
 
 // Обновление списков
 document.getElementById('refresh-games-btn')?.addEventListener('click', loadActiveGames);
